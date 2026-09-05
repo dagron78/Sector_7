@@ -517,6 +517,17 @@ const SPRITES = {
     g.fillStyle='#c9c2b4'; g.fillRect(10,12,14,8);
     g.fillStyle='#d84a2a'; g.beginPath();g.moveTo(24,12);g.lineTo(30,16);g.lineTo(24,20);g.fill();
     g.fillStyle='#ffb627'; g.fillRect(4,14,6,4);}),
+  sidearmTrace: makeSprite(12,32,g=>{
+    g.fillStyle='#ffb627';g.fillRect(3,4,6,26);
+    g.fillStyle='#fff4bd';g.fillRect(5,2,2,18);}),
+  pelletTrace: makeSprite(16,16,g=>{
+    ell(g,8,8,6,6,'#ff873c');ell(g,8,7,3,3,'#ffe6ba');}),
+  ripperTrace: makeSprite(8,40,g=>{
+    g.fillStyle='#25d0ff';g.fillRect(1,4,6,36);
+    g.fillStyle='#e6ffff';g.fillRect(3,0,2,28);}),
+  rocketTrail: makeSprite(32,32,g=>{
+    ell(g,16,16,13,13,'#726d79');ell(g,16,14,7,7,'#ff873c');
+    ell(g,16,12,3,3,'#ffe6ba');}),
   blast: [0,1,2].map(i=>makeSprite(64,64,(g,w,h)=>{
     const r=14+i*13;
     ell(g,32,32,r,r,`rgba(255,${140-i*30},40,${0.75-i*0.22})`);
@@ -800,6 +811,21 @@ function projectile(kind,x,y,dx,dy,speed,owner){
   G.ents.push({type:'proj', kind, x, y, dx, dy, speed, owner, alive:true, scale:kind==='rocket'?0.22:0.26, life:6});
 }
 function blast(x,y){ G.ents.push({type:'fx', kind:'blast', x, y, t:0, scale:0.9, alive:true}); }
+function tracer(dx,dy,distance,weapon){
+  const start=Math.min(0.35,distance);
+  G.ents.push({type:'tracer',kind:['sidearmTrace','pelletTrace','ripperTrace'][weapon],
+    x:G.posX+dx*start,y:G.posY+dy*start,dx,dy,remaining:distance-start,
+    speed:distance/0.10,life:0.18,duration:0.18,scale:weapon===1?0.045:0.12,
+    height:weapon===1?0.06+(Math.random()-0.5)*0.1:0.06,alive:true});
+}
+function updateShotEffect(e,dt){
+  e.life-=dt;
+  if(e.life<=0){e.alive=false;return;}
+  if(e.type==='tracer'){
+    const step=Math.min(e.remaining,e.speed*dt);
+    e.x+=e.dx*step;e.y+=e.dy*step;e.remaining-=step;
+  } else e.scale+=dt*0.4;
+}
 
 /* ================= damage ================= */
 function hurtPlayer(n){
@@ -842,12 +868,13 @@ function hitscan(dx,dy,dmg,maxD){
   maxD = maxD||24;
   for(let s=0.2; s<maxD; s+=0.06){
     const x=G.posX+dx*s, y=G.posY+dy*s;
-    if(sightBlocked(tileAt(x,y), x|0, y|0)) return;
+    if(sightBlocked(tileAt(x,y), x|0, y|0)) return Math.max(0,s-0.06);
     for(const e of G.ents){
       if(e.type!=='enemy'||e.dead) continue;
-      if(Math.hypot(e.x-x,e.y-y) < e.radius+0.06){ damageEnemy(e,dmg); return; }
+      if(Math.hypot(e.x-x,e.y-y) < e.radius+0.06){ damageEnemy(e,dmg); return s; }
     }
   }
+  return maxD;
 }
 function aimAssist(ang){
   if(!TOUCH) return ang;
@@ -884,7 +911,8 @@ function fire(){
     const n = w.pellets||1;
     for(let i=0;i<n;i++){
       const a = ang + (Math.random()-0.5)*w.spread*2;
-      hitscan(Math.cos(a), Math.sin(a), w.dmg);
+      const dx=Math.cos(a),dy=Math.sin(a);
+      tracer(dx,dy,hitscan(dx,dy,w.dmg),G.weapon);
     }
   } else {
     const rx=Math.cos(ang), ry=Math.sin(ang);
@@ -1088,6 +1116,7 @@ function update(dt){
     if(e.type==='enemy') updateEnemy(e,dt);
     else if(e.type==='item') { e.bobT += dt*2.6; checkPickup(e); }
     else if(e.type==='proj') updateProj(e,dt);
+    else if(e.type==='tracer'||e.type==='trail') updateShotEffect(e,dt);
     else if(e.type==='fx'){ e.t += dt*4.5; if(e.t>=3) e.alive=false; }
   }
   G.ents = G.ents.filter(e=>e.alive);
@@ -1196,6 +1225,14 @@ function updateEnemy(e,dt){
 function updateProj(p,dt){
   p.life -= dt;
   if(p.life<=0){ p.alive=false; return; }
+  if(p.kind==='rocket'){
+    p.trailTime=(p.trailTime||0)-dt;
+    if(p.trailTime<=0){
+      p.trailTime=0.035;
+      G.ents.push({type:'trail',kind:'rocketTrail',x:p.x,y:p.y,
+        life:0.28,duration:0.28,scale:0.10,height:0.06,alive:true});
+    }
+  }
   const steps=3, sd=p.speed*dt/steps;
   for(let i=0;i<steps;i++){
     p.x += p.dx*sd; p.y += p.dy*sd;
@@ -1340,6 +1377,7 @@ function renderWorld(){
 }
 
 function spriteFrame(e){
+  if(e.type==='tracer'||e.type==='trail') return SPRITES[e.kind];
   if(e.type==='item') return SPRITES[e.kind];
   if(e.type==='proj') return SPRITES[e.kind];
   if(e.type==='fx') return SPRITES.blast[Math.min(2,e.t|0)];
@@ -1382,6 +1420,7 @@ function renderSprites(pitch){
     // ground offset: keep feet on the floor
     let vWorld = (1-scale)*0.5 + bobOff;
     if(e.type==='proj') vWorld = 0.06;
+    if(e.type==='tracer'||e.type==='trail') vWorld=e.height;
     if(e.type==='fx') vWorld = 0.0;
     const vScreen = (vWorld * RH / tY) | 0;
 
@@ -1391,7 +1430,8 @@ function renderSprites(pitch){
 
     const dist = Math.sqrt(sx*sx+sy*sy);
     let f = clamp(1 - dist/15, 0.16, 1);
-    if(e.type==='fx' || e.type==='proj') f = 1;
+    if(e.type==='fx' || e.type==='proj' || e.type==='tracer' || e.type==='trail') f = 1;
+    const opacity=(e.type==='tracer'||e.type==='trail')?clamp(e.life/e.duration,0,1):1;
 
     const y0=Math.max(0,startY), y1=Math.min(RH-1,startY+h);
     const x0=Math.max(0,startX), x1=Math.min(RW-1,startX+w);
@@ -1404,7 +1444,11 @@ function renderSprites(pitch){
         if(ty<0||ty>=spr.h) continue;
         const c = spr.px[ty*spr.w+tx];
         if((c>>>24) < 40) continue;
-        buf[y*RW+x] = f>=0.999 ? (c|0xff000000) : shadeC(c,f);
+        if(opacity<1){
+          const bg=buf[y*RW+x],a=opacity*(c>>>24)/255;
+          buf[y*RW+x]=rgb((c&255)*a+(bg&255)*(1-a),
+            ((c>>>8)&255)*a+((bg>>>8)&255)*(1-a),((c>>>16)&255)*a+((bg>>>16)&255)*(1-a));
+        } else buf[y*RW+x] = f>=0.999 ? (c|0xff000000) : shadeC(c,f);
       }
     }
   }

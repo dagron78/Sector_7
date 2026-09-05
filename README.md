@@ -54,6 +54,9 @@ devices.
 - The sidearm has unlimited ammunition. Empty weapons play a rate-limited click.
 - Boomstick deals up to 78 damage across nine pellets. Thumper explosions deal
   up to 99 damage, decreasing with distance from the blast.
+- Each weapon has its own shot animation: gold sidearm tracers, orange Boomstick
+  pellets, cyan Ripper streaks, and a fading Thumper exhaust trail. Tracers are
+  cosmetic: bullet damage remains immediate, while rockets retain travel time.
 - Progress is not saved across page reloads.
 
 ## Development checks

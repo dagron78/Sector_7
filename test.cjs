@@ -55,6 +55,28 @@ const checks = String.raw`
   }
   arena(['#####','#...#','#####']);spawnEnemy('grunt',3.5,1.5);
   const exposed=G.ents[0];splash(1.5,1.5,4,78);assert(exposed.hp<exposed.maxhp);assert(G.hp<100);
+  for(const weapon of [0,1,2,3]){
+    arena(['########','#......#','#......#','########']);
+    G.posX=1.5;G.posY=1.5;G.dirX=1;G.dirY=0;G.planeX=0;G.planeY=FOV;
+    G.explored=new Uint8Array(G.W*G.H);G.mode='play';G.weapon=weapon;
+    G.ammo={bullets:10,shells:10,rockets:10};
+    fire();
+    if(weapon<3){
+      const shots=G.ents.filter(e=>e.type==='tracer');
+      assert.equal(shots.length,weapon===1?9:1);
+      assert(shots.every(e=>e.kind===['sidearmTrace','pelletTrace','ripperTrace'][weapon]));
+      for(const e of shots){updateShotEffect(e,.1);assert(e.x<7,'tracer ends before wall');assert(e.remaining<1e-9);}
+      renderWorld();
+      for(const e of shots){updateShotEffect(e,.1);assert.equal(e.alive,false);}
+    }else{
+      const rocket=G.ents.find(e=>e.kind==='rocket');updateProj(rocket,.05);
+      const trail=G.ents.find(e=>e.type==='trail');assert(trail);renderWorld();
+      updateShotEffect(trail,.3);assert.equal(trail.alive,false);
+    }
+  }
+  arena(['#####','#...#','#####']);G.posX=1.5;G.posY=1.5;
+  spawnEnemy('brute',3.5,1.5);const target=G.ents[0],before=target.hp;
+  const hitDistance=hitscan(1,0,14);assert.equal(target.hp,before-14);assert(hitDistance<2);
   arena(['#####','#.#.#','##..#','#...#','#####']);
   assert.equal(hasLOS(1.5,1.5,2.5,2.5),false,'corner walls block explosions');
   assert.equal(hasLOS(2.5,2.5,1.5,1.5),false);
@@ -105,7 +127,7 @@ const checks = String.raw`
   document.getElementById('setting-sensitivity').oninput({target:{value:'2'}});assert.equal(settings.sensitivity,2);
   document.getElementById('setting-controls').onchange({target:{value:'touch'}});assert.equal(TOUCH,true);
   document.getElementById('setting-controls').onchange({target:{value:'desktop'}});assert.equal(TOUCH,false);
-  console.log('PASS: cover, doors, corners, ammo cooldown, analog input, focus, death/retry, maps, rendering smoke check, settings');
+  console.log('PASS: cover, doors, corners, weapon effects, ammo cooldown, analog input, focus, death/retry, maps, rendering smoke check, settings');
 `;
 vm.runInNewContext(source.slice(0,source.lastIndexOf('})();'))+checks+'})();', {
   assert,console,document,listeners,timers,
