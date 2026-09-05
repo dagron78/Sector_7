@@ -28,6 +28,8 @@ const document = {
 };
 const checks = String.raw`
   // No audio devices or real timers are needed for these logic checks.
+  assert.equal(WEAPONS[1].dmg*WEAPONS[1].pellets,78);
+  assert.equal(WEAPONS[3].dmg,99);
   for(const name of Object.keys(SFX)) SFX[name]=()=>{};
   let emptySounds=0; SFX.empty=()=>emptySounds++;
   startGame=()=>{};

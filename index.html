@@ -664,9 +664,9 @@ const SFX = {
 /* ================= weapons ================= */
 const WEAPONS = [
   {name:'SIDEARM',   ammo:null,      rate:0.26, dmg:14, kind:'hit',  spread:0.012, snd:'pistol'},
-  {name:'BOOMSTICK', ammo:'shells',  rate:0.82, dmg:11, kind:'hit',  pellets:9, spread:0.10, snd:'shotgun', use:1},
+  {name:'BOOMSTICK', ammo:'shells',  rate:0.82, dmg:78/9, kind:'hit',  pellets:9, spread:0.10, snd:'shotgun', use:1},
   {name:'RIPPER',    ammo:'bullets', rate:0.085,dmg:9,  kind:'hit',  spread:0.045, snd:'chain', use:1},
-  {name:'THUMPER',   ammo:'rockets', rate:1.05, dmg:0,  kind:'rocket', snd:'launch', use:1},
+  {name:'THUMPER',   ammo:'rockets', rate:1.05, dmg:99, kind:'rocket', snd:'launch', use:1},
 ];
 
 const QUIPS = ['Sanitation complete.','Back to the mothership.','That one was slow.',
@@ -1201,7 +1201,7 @@ function updateProj(p,dt){
     p.x += p.dx*sd; p.y += p.dy*sd;
     if(sightBlocked(tileAt(p.x,p.y), p.x|0, p.y|0)){
       p.alive=false;
-      if(p.kind==='rocket') splash(p.x-p.dx*0.2, p.y-p.dy*0.2, 2.8, 78);
+      if(p.kind==='rocket') splash(p.x-p.dx*0.2, p.y-p.dy*0.2, 2.8, WEAPONS[3].dmg);
       else { blast(p.x,p.y); }
       return;
     }
@@ -1209,7 +1209,7 @@ function updateProj(p,dt){
       for(const e of G.ents){
         if(e.type!=='enemy'||e.dead) continue;
         if(Math.hypot(e.x-p.x,e.y-p.y)<e.radius+0.2){
-          p.alive=false; splash(p.x,p.y,2.8,78); return;
+          p.alive=false; splash(p.x,p.y,2.8,WEAPONS[3].dmg); return;
         }
       }
     } else {

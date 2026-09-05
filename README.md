@@ -52,6 +52,8 @@ devices.
   that sector. Pickups and enemies reset; retries cannot accumulate supplies.
 - Health, armor, weapons, and ammunition carry into the next sector. Keys reset.
 - The sidearm has unlimited ammunition. Empty weapons play a rate-limited click.
+- Boomstick deals up to 78 damage across nine pellets. Thumper explosions deal
+  up to 99 damage, decreasing with distance from the blast.
 - Progress is not saved across page reloads.
 
 ## Development checks
