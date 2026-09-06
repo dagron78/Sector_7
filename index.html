@@ -100,11 +100,19 @@
       background:rgba(255,182,39,.92);color:#120a04;font-weight:700}
   }
   @media (max-width:560px){ .keys{font-size:12px;gap:5px 14px} p{font-size:13px} }
-  .panel{overflow-y:auto;touch-action:pan-y}
+  .panel{overflow-y:auto;touch-action:pan-y;justify-content:flex-start}
+  .panel>*{flex-shrink:0}
+  button[hidden]{display:none}
   .settings{width:min(100%,360px);display:grid;gap:18px;margin-top:24px;text-align:left}
   .settings label{display:grid;gap:8px;font-size:14px}
   .settings input,.settings select{width:100%;font:inherit;accent-color:var(--amber)}
   .settings select{padding:8px;background:var(--steel);color:var(--ink)}
+  .guide{width:min(100%,720px);display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin-top:20px;text-align:left}
+  .guide article{padding:14px;background:#181725;border:1px solid #39364b;font-size:13px;line-height:1.6}
+  .guide b{display:block;color:var(--plasma);margin-bottom:5px}
+  .guide .danger b{color:#ffb627}
+  .guide .enemy b{color:#f19dab}
+  .guide canvas{float:right;width:48px;height:64px;object-fit:contain;image-rendering:pixelated;margin:0 0 8px 10px}
   @media (max-height:650px){.panel{justify-content:flex-start;padding:20px}.panel p{margin-top:12px}.keys{margin-top:14px}.panel button{margin-top:16px}}
 </style>
 </head>
@@ -123,20 +131,23 @@
 
 <div class="panel on" id="p-title">
   <h1>SECTOR 7<span>HOSTILE TAKEOVER</span></h1>
-  <p>The mining outpost went dark six hours ago. Command sent a repair crew. Command
-     is now sending you, because the repair crew is why the outpost went dark.</p>
+  <p>Six sectors. An outpost gone silent. Reclaim the surface, then descend into
+     Blackout Protocol: powered machinery, escaped specimens, and the engine beneath.</p>
   <div class="keys" id="keylist">
     <b>W A S D</b><span>move</span>
     <b>Mouse</b><span>look</span>
     <b>Click</b><span>fire</span>
-    <b>1 2 3 4</b><span>switch weapon</span>
+    <b>1 2 3 4 5</b><span>switch weapon</span>
     <b>Shift</b><span>sprint</span>
     <b>E</b><span>use switch</span>
     <b>Tab</b><span>map (pauses)</span>
     <b>Esc</b><span>pause</span>
   </div>
   <button id="btn-start">DROP IN</button>
+  <button id="btn-blackout" class="ghost">BLACKOUT PROTOCOL · CHAPTER II</button>
+  <button id="btn-continue" class="ghost" hidden>CONTINUE CHECKPOINT</button>
   <button id="btn-settings-title" class="ghost">SETTINGS</button>
+  <button id="btn-guide-title" class="ghost">FIELD GUIDE</button>
   <div class="fine" id="fine">build 4 · automap · needs a keyboard and mouse</div>
 </div>
 
@@ -147,6 +158,21 @@
   <button id="btn-resume">RESUME</button>
   <button id="btn-map" class="ghost">VIEW MAP</button>
   <button id="btn-settings-pause" class="ghost">SETTINGS</button>
+  <button id="btn-guide-pause" class="ghost">FIELD GUIDE</button>
+</div>
+
+<div class="panel" id="p-briefing">
+  <div class="tag">SECTOR BRIEFING</div>
+  <h1 id="brief-title" style="font-size:clamp(24px,5vw,42px)"></h1>
+  <p id="brief-objective"></p>
+  <div id="brief-cards" class="guide"></div>
+  <p class="fine">The sector stays paused until you enter. The automap tracks your objective.</p>
+  <button id="btn-enter">ENTER SECTOR</button>
+</div>
+<div class="panel" id="p-guide">
+  <h1 style="font-size:clamp(24px,5vw,42px)">FIELD GUIDE</h1>
+  <div id="guide-cards" class="guide"></div>
+  <button id="btn-guide-back">BACK</button>
 </div>
 
 <div class="panel" id="p-settings">
@@ -205,6 +231,7 @@ const FOV = 0.66;
 const TAU = Math.PI * 2;
 
 const T_EMPTY=0, T_TECH=1, T_PANEL=2, T_RUST=3, T_DOOR=10, T_LOCK=11, T_EXIT=12;
+const T_POWER=13,T_CONDUIT=14,T_RELAY=15,T_SECRET=16,T_BIO=17,T_ICE=18,T_CRATE=19,T_GLASS=20;
 const solid = t => t !== T_EMPTY;
 
 const clamp=(v,a,b)=>v<a?a:(v>b?b:v);
@@ -221,7 +248,7 @@ const screenCv = document.getElementById('screen');
 const sctx = screenCv.getContext('2d');
 const bufCv = document.createElement('canvas');
 const bctx = bufCv.getContext('2d');
-let imgData, buf, zbuf, rowDist, rowLevel;
+let imgData, buf, zbuf, rowDist, rowLevel,glassDepth;
 
 function setResolution(){
   const vw = window.innerWidth || 960, vh = window.innerHeight || 540;
@@ -234,6 +261,7 @@ function setResolution(){
   imgData = bctx.createImageData(RW, RH);
   buf   = new Uint32Array(imgData.data.buffer);
   zbuf  = new Float32Array(RW);
+  glassDepth=new Float32Array(RW);
   rowDist  = new Float32Array(RH);
   rowLevel = new Uint8Array(RH);
   sctx.imageSmoothingEnabled = false;
@@ -623,6 +651,346 @@ const MAPS = [
 }
 ];
 
+/* ================= BLACKOUT PROTOCOL: chapter two ================= */
+// Authored rooms use the same tile renderer as the original campaign.
+function blackoutMap(which){
+  const W=25,H=23,wall=which===1?'I':which===2?'B':'#';
+  const grid=Array.from({length:H},(_,y)=>Array.from({length:W},(_,x)=>x===0||y===0||x===W-1||y===H-1?wall:'.'));
+  const put=(x,y,c)=>grid[y][x]=c;
+  const rect=(x,y,w,h,c)=>{for(let yy=y;yy<y+h;yy++)for(let xx=x;xx<x+w;xx++)put(xx,yy,c);};
+  const fixtures=[],gates=[],props=[];
+  const fixture=(kind,x,y,label)=>{put(x,y,{power:'Q',conduit:'C',relay:'R',secret:'S'}[kind]);fixtures.push({kind,x,y,label});};
+  const gate=(x,y,id)=>{put(x,y,'d');gates.push({x,y,id});};
+  put(3,3,'P');put(12,22,'E');
+  put(4,3,'H');
+  let modes,initial,briefing,plate;
+  if(which===0){
+    modes=['lighting','cargo'];initial='lighting';
+    briefing='Cargo is jammed. Route power to handling, then find a way through the freight lock.';
+    rect(1,10,23,1,'K');gate(12,10,'cargo');gate(13,10,'cargo');
+    rect(4,10,5,1,'V');
+    rect(1,17,23,1,'#');gate(18,17,'plate');gate(5,17,'bypass');
+    rect(7,3,3,4,'K');rect(16,3,3,4,'K');rect(8,12,2,3,'K');
+    fixture('power',3,1,'LIGHTING / CARGO HANDLING');
+    fixture('power',16,10,'LIGHTING / CARGO HANDLING');
+    fixture('conduit',5,14,'FREIGHT LOCK BYPASS');
+    // Scuffed vent gives an optional cache overlooking the cargo hall.
+    rect(1,5,4,1,'#');fixture('secret',3,5,'SCRATCHED SERVICE VENT');
+    rect(5,5,1,4,'#');put(2,7,'v');put(3,7,'e');
+    put(5,3,'1');put(4,4,'J');put(6,7,'a');put(14,13,'U');put(20,14,'g');put(8,20,'F');
+    put(15,19,'H');put(19,20,'r');put(3,12,'H');put(21,8,'g');
+    plate={x:18,y:15};props.push({kind:'loader',x:19.5,y:6.5},{kind:'loader',x:3.5,y:19.5});
+  }else if(which===1){
+    modes=['containment','security'];initial='containment';
+    briefing='Security opens the specimens. Containment disarms the turrets. Cut the cryo lock conduit to escape.';
+    rect(1,10,23,1,'I');gate(7,10,'security');gate(18,10,'containment');
+    rect(1,18,23,1,'I');gate(12,18,'cryo');
+    rect(9,3,7,1,'I');rect(9,3,1,5,'I');rect(15,3,1,5,'I');rect(9,7,7,1,'I');gate(12,7,'specimens');
+    put(11,5,'F');put(13,5,'F');
+    fixture('power',3,1,'CONTAINMENT / SECURITY');fixture('power',12,10,'CONTAINMENT / SECURITY');
+    fixture('conduit',3,14,'CRYO LOCK / TURRET FEED');
+    fixture('secret',22,18,'FROSTED SERVICE VENT');put(22,20,'v');put(21,20,'r');
+    rect(9,12,2,3,'I');rect(16,13,2,3,'I');
+    put(5,5,'L');put(19,13,'L');put(5,12,'T');put(21,15,'T');put(13,15,'U');
+    put(3,8,'2');put(21,7,'a');put(5,16,'e');put(16,20,'H');put(4,20,'3');
+    props.push({kind:'tank',x:17.5,y:5.5},{kind:'tank',x:20.5,y:5.5},{kind:'tank',x:4.5,y:16.5});
+  }else{
+    modes=['coolant','reactor'];initial='coolant';
+    briefing='The engine is alive. Power its access gate, sever three relays, then destroy the Warden.';
+    rect(1,7,23,1,'B');gate(12,7,'reactor');gate(13,7,'reactor');
+    rect(7,10,2,3,'B');rect(17,10,2,3,'B');rect(7,17,2,3,'B');rect(17,17,2,3,'B');
+    fixture('power',3,1,'COOLANT / REACTOR ACCESS');fixture('power',16,7,'COOLANT / REACTOR ACCESS');
+    fixture('relay',2,11,'WEST RELAY');fixture('relay',22,11,'EAST RELAY');fixture('relay',12,20,'CORE RELAY');
+    fixture('conduit',21,4,'SENTRY FEED');fixture('secret',1,5,'ROOT-COVERED SERVICE VENT');
+    put(2,6,'H');put(3,6,'r');put(6,4,'3');put(8,4,'r');put(10,4,'e');
+    put(12,15,'W');put(4,13,'F');put(20,17,'F');put(20,9,'T');put(5,9,'L');
+    put(3,18,'H');put(21,18,'H');put(11,9,'r');put(15,19,'a');put(12,21,'e');
+    props.push({kind:'growth',x:5.5,y:16.5},{kind:'growth',x:20.5,y:14.5});
+  }
+  return {name:['FREIGHT GRAVEYARD','COLD STORAGE','THE BURIED ENGINE'][which],par:['05:00','06:00','07:00'][which],
+    rows:grid.map(r=>r.join('')),blackout:{which,modes,initial,briefing,fixtures,gates,props,plate}};
+}
+MAPS.push(blackoutMap(0),blackoutMap(1),blackoutMap(2));
+
+function chapterTexture(kind){
+  const t=newTex(),rnd=mulberry32(412+kind);
+  for(let y=0;y<TS;y++)for(let x=0;x<TS;x++){
+    const seam=x%32<2||y%32<2,n=rnd()*14;
+    let c=kind===T_ICE?rgb(65+n,99+n,117+n):kind===T_BIO?rgb(55+n,25+n,51+n):rgb(85+n,62+n,30+n);
+    if(kind===T_ICE && (x+y)%23<2)c=rgb(144,211,225);
+    if(kind===T_BIO && Math.abs(Math.sin(x*.18+y*.06)*10+y%24-12)<2)c=rgb(119,57,91);
+    if(kind===T_CRATE && y%12<3)c=rgb(146,102,39);
+    if(seam)c=rgb(20,25,32);
+    t[y*TS+x]=c;
+  }return t;
+}
+for(const kind of [T_ICE,T_BIO,T_CRATE])TEXS[kind]=bakeShades(chapterTexture(kind));
+for(const [kind,color] of [[T_POWER,rgb(37,208,255)],[T_CONDUIT,rgb(255,145,40)],[T_RELAY,rgb(200,90,240)],[T_SECRET,rgb(116,137,143)]]){
+  const t=texTech();
+  for(let y=12;y<52;y++)for(let x=12;x<52;x++){
+    if(kind===T_SECRET ? y%9<3 : kind===T_CONDUIT ? x%12<5 : kind===T_POWER ? Math.abs(x-32+(y-32)*.4)<5 : Math.abs(Math.hypot(x-32,y-32)-14)<4)t[y*TS+x]=color;
+  }TEXS[kind]=bakeShades(t);
+}
+const NEW_ENEMIES={
+  bulwark:{hp:155,speed:1.0,scale:1.04,radius:.40,melee:true,dmg:22,cd:3,sight:17},
+  leech:{hp:38,speed:1.9,scale:.55,radius:.24,melee:true,dmg:6,cd:1.4,sight:16},
+  splitter:{hp:75,speed:1.1,scale:.95,radius:.38,melee:true,dmg:10,cd:1.2,sight:16},
+  crawler:{hp:14,speed:3.0,scale:.25,radius:.15,melee:true,dmg:5,cd:.8,sight:20},
+  warden:{hp:650,speed:0,scale:1.7,radius:.65,melee:false,dmg:12,cd:2.8,sight:24},
+  turret:{hp:45,speed:0,scale:.7,radius:.3,melee:false,dmg:8,cd:1.9,sight:18},
+};
+const FIELD_GUIDE={
+  power:['Power Switch · cyan lightning','USE to alternate the named circuits. The current circuit appears above your objective. A power drain temporarily freezes machinery.'],
+  conduit:['Conduit · orange cables','SHOOT the exposed cables with any damaging weapon. This permanently opens the named bypass and disables connected sentries. The Sidearm always has ammo.'],
+  relay:['Shield Relay · purple ring','USE each of the three relays in the reactor arena. All three must be severed before the Warden takes damage.'],
+  plate:['Pressure Plate · gold floor square','Lure a Bulwark onto it to latch the freight door open. Its body also works. If all heavy enemies die elsewhere, stand on the plate for 3 seconds.'],
+  hazard:['Surge Tile · yellow → red','Yellow is a two-second warning cycle; damage starts after 1.35 seconds when it turns red. Move off the marked tiles. Coolant power reduces surge damage.'],
+  vent:['Service Vent · scratched gray slats','USE a suspicious vent to reveal a maintenance cache. Secrets are optional and never required for the exit.'],
+  bulwark:['Bulwark · gold armor','Front armor absorbs most damage. A warning and bright visor precede its charge. Sidestep, then attack the green core on its back while it recovers.'],
+  leech:['Leech · glowing teal body','It approaches a Power Switch and drains circuits for six seconds. Killing the draining Leech restores power immediately.'],
+  splitter:['Splitter · swollen green sacs','It releases three fast Crawlers on death. Keep your distance; a well-placed rocket can catch the whole swarm.'],
+  warden:['Warden · rooted violet core','Sever its Shield Relays, then attack the core. It alternates plasma volleys and marked floor surges, attacking faster below 40% health.'],
+  turret:['Sentry · fixed gun pedestal','In Cold Storage, Security power activates these guns and Containment disables them. In any sector, cut their orange Conduit to shut them down. Cover blocks their projectiles.'],
+  portal:['Portal Gun · slot 5','Pick up the blue-and-amber projector in Freight Graveyard. FIRE places blue, then amber, on ordinary walls. Walk into either ring to travel. Fire again to move the next color. No ammunition required.'],
+  basics:['Keys, Doors & Exit','Normal doors open when approached. Red doors need the red keycard. USE the green exit switch after completing the objective. TAB/MAP pauses and shows your route.'],
+  grunt:['Grunt & Brute','Teal Grunts fire green plasma; dodge sideways or take cover. Purple Brutes close in for melee; keep moving and avoid getting cornered.'],
+};
+const SECTOR_GUIDES=[['basics','grunt'],['basics','grunt'],['basics','grunt'],
+  ['power','plate','conduit','bulwark','splitter','portal','vent'],['power','conduit','leech','splitter','turret','vent'],['power','relay','warden','hazard','splitter','vent']];
+function guideCards(names){return names.map(name=>{
+  const [title,body]=FIELD_GUIDE[name],kind=NEW_ENEMIES[name]||name==='grunt'?'enemy':name==='hazard'?'danger':'';
+  return '<article class="'+kind+'"><canvas data-guide="'+name+'" aria-label="'+title+' illustration"></canvas><b>'+title+'</b>'+body+'</article>';
+}).join('');}
+function drawGuideIcons(container){
+  for(const c of container.querySelectorAll?.('[data-guide]')||[]){
+    const name=c.dataset.guide;
+    let spr=SPRITES[name+'Frames']?.[0]||(name==='grunt'?SPRITES.grunt[0]:name==='portal'?SPRITES.wPortal:null);
+    const tile={power:T_POWER,conduit:T_CONDUIT,relay:T_RELAY,vent:T_SECRET,basics:T_EXIT}[name];
+    if(tile)spr={w:TS,h:TS,px:TEXS[tile][20]};
+    if(spr){c.width=spr.w;c.height=spr.h;const g=c.getContext('2d'),img=g.createImageData(spr.w,spr.h);new Uint32Array(img.data.buffer).set(spr.px);g.putImageData(img,0,0);}
+    else {c.width=64;c.height=64;const g=c.getContext('2d');g.fillStyle=name==='hazard'?'#ff6338':'#dbac31';g.fillRect(5,5,54,54);g.fillStyle='#252132';for(let i=0;i<4;i++)g.fillRect(8+i*13,8,5,48);}
+  }
+}
+function showBriefing(){
+  G.mode='briefing';setTouchUI(false);panel('p-briefing');
+  P('brief-title').textContent=MAPS[G.level].name;
+  P('brief-objective').textContent=MAPS[G.level].blackout?.briefing||'Find the red keycard, reach the exit, and use its green switch.';
+  P('brief-cards').innerHTML=guideCards(SECTOR_GUIDES[G.level]);drawGuideIcons(P('brief-cards'));P('p-briefing').scrollTop=0;P('btn-enter').focus({preventScroll:true});
+}
+const ENEMY_HINTS={bulwark:'BULWARK — bait the charge; flank its rear core.',leech:'LEECH — kill it to restore power.',
+  splitter:'SPLITTER — keep your distance when it bursts.',crawler:'CRAWLERS — incoming swarm!',warden:'WARDEN — sever the three purple relays.',turret:'SENTRY — containment or a cut feed disables it.'};
+function drawBlackoutEnemy(g,w,h,kind,pose){
+  const cx=w/2,base=h-3,step=pose===1?-3:pose===2?3:0;
+  if(pose===5){g.translate(cx,base);g.scale(1.15,.22);g.translate(-cx,-base);}
+  const warn=pose===3,back=pose===6;
+  if(kind==='bulwark'){
+    g.fillStyle='#333945';g.fillRect(12+step,65,16,28);g.fillRect(37-step,65,16,28);
+    g.fillStyle='#b58c38';g.fillRect(5,24,54,46);g.fillStyle='#e1b852';g.fillRect(7,22,50,8);
+    g.fillStyle='#273443';g.fillRect(17,7,30,25);g.fillStyle=warn?'#ff463b':'#ffe493';g.fillRect(20,15,24,5);
+    if(back){ell(g,cx,47,14,18,'#24352f');ell(g,cx,47,9,13,'#53ffc1');}
+    else {g.fillStyle='#59595b';g.fillRect(15,32,34,34);g.fillStyle='#d1b775';g.fillRect(29,32,6,34);}
+  }else if(kind==='leech'||kind==='crawler'){
+    const small=kind==='crawler',col=small?'#db724e':'#4af8d7';
+    for(let i=0;i<3;i++){g.strokeStyle=col;g.lineWidth=3;g.beginPath();g.moveTo(cx,54+i*9);g.lineTo(5,48+i*14+step);g.moveTo(cx,54+i*9);g.lineTo(59,48+i*14-step);g.stroke();}
+    ell(g,cx,60,15,25,small?'#713a41':'#163f4c');ell(g,cx,52,9,15,warn?'#ffffff':col);
+    g.fillStyle='#f7f2af';g.fillRect(23,35,6,5);g.fillRect(36,35,6,5);
+  }else if(kind==='splitter'){
+    g.fillStyle='#65522d';g.fillRect(12+step,72,12,22);g.fillRect(40-step,72,12,22);
+    ell(g,cx,49,29,36,'#768b38');ell(g,cx,52,21,26,'#b2bf54');
+    for(let i=0;i<3;i++)ell(g,20+i*12,54+(i%2)*9,6,9,warn?'#ffab53':'#e0d785');
+    ell(g,cx,18,13,12,'#424c30');g.fillStyle='#ff6f53';g.fillRect(23,14,18,4);
+  }else if(kind==='warden'){
+    for(let i=0;i<5;i++){g.strokeStyle='#7d416a';g.lineWidth=7;g.beginPath();g.moveTo(cx,55);g.lineTo(4+i*14,94);g.stroke();}
+    ell(g,cx,45,28,37,'#4c2f52');ell(g,cx,42,21,28,warn?'#ee657b':'#a357a5');
+    ell(g,cx,44,12,18,back?'#ffcd65':'#4de5ed');ell(g,cx,44,5,10,'#f9f1d6');
+    g.fillStyle='#dfb9e3';g.fillRect(6,12,8,24);g.fillRect(50,12,8,24);
+  }else{
+    g.fillStyle='#434e65';g.fillRect(12,57,40,32);g.fillRect(22,34,20,28);
+    g.fillStyle='#9caab8';g.fillRect(6,30,52,14);g.fillStyle=warn?'#ff744d':'#e84d58';g.fillRect(25,25,14,9);
+  }
+  if(pose===4){g.globalAlpha=.38;g.fillStyle='#ffefcd';g.fillRect(5,10,54,78);g.globalAlpha=1;}
+}
+for(const kind of Object.keys(NEW_ENEMIES))SPRITES[kind+'Frames']=Array.from({length:7},(_,pose)=>
+  makeSprite(64,96,(g,w,h)=>drawBlackoutEnemy(g,w,h,kind,pose)));
+for(const kind of ['loader','tank','growth'])SPRITES[kind]=makeSprite(64,96,(g)=>{
+  if(kind==='loader'){g.fillStyle='#b88732';g.fillRect(8,38,48,45);g.fillRect(12,12,6,45);g.fillRect(46,12,6,45);g.fillStyle='#272e39';g.fillRect(12,74,12,20);g.fillRect(42,74,12,20);}
+  if(kind==='tank'){ell(g,32,80,22,9,'#3d6574');g.fillStyle='#547e8e';g.fillRect(10,18,44,62);ell(g,32,18,22,9,'#b0e2e8');ell(g,32,51,13,21,'#63abac');}
+  if(kind==='growth'){for(let i=0;i<5;i++)ell(g,10+i*10,70-i%2*20,10,23,'#753d62');ell(g,32,49,13,17,'#be739c');}
+});
+for(const [kind,color] of [['portalBlue','#25d0ff'],['portalAmber','#ffb627']])SPRITES[kind]=makeSprite(64,96,g=>{
+  ell(g,32,48,27,45,color);ell(g,32,48,22,40,'#edfaff');
+  g.globalCompositeOperation='destination-out';ell(g,32,48,19,37,'#000');g.globalCompositeOperation='source-over';
+});
+SPRITES.wPortal=makeSprite(48,48,g=>{
+  g.fillStyle='#d0d8df';g.fillRect(5,21,34,17);ell(g,13,23,8,10,'#25d0ff');ell(g,32,23,8,10,'#ffb627');
+});
+
+function initBlackout(){
+  const def=MAPS[G.level].blackout;
+  G.systems=def?{mode:def.initial,outage:0,leech:null,cargo:0,plate:false,override:0,conduit:false,
+    relays:new Set(),secrets:new Set(),hazards:[],floor:new Map(),taught:new Set()}:null;
+  if(!def)return;
+  for(const gate of def.gates){const door=G.doors.get(gate.y*G.W+gate.x);door.controlled=true;door.id=gate.id;}
+  for(const prop of def.props)G.ents.push({...prop,type:'decor',scale:.8,alive:true});
+  msg('BLACKOUT PROTOCOL — '+chapterObjective(),'#a3dce8');
+}
+function openFixture(f){G.map[f.y*G.W+f.x]=T_EMPTY;}
+function cutConduit(){
+  const s=G.systems,def=MAPS[G.level].blackout;if(!s||s.conduit)return;
+  s.conduit=true;for(const f of def.fixtures)if(f.kind==='conduit')openFixture(f);
+  SFX.boom();msg('FEED CUT — bypass open; sentries disabled.','#ffb627');
+}
+function useFixture(f){
+  const s=G.systems,def=MAPS[G.level].blackout;
+  if(f.kind==='power'){
+    if(s.outage>0){msg('Power drained — eliminate the glowing leech.');return;}
+    s.mode=def.modes[(def.modes.indexOf(s.mode)+1)%def.modes.length];SFX.key();
+    msg('POWER → '+s.mode.toUpperCase(),'#25d0ff');
+    if(s.mode==='cargo'){SFX.door();msg('Cargo moving. Heavy contact beyond the containers.','#ffb627');}
+    if(s.mode==='security')msg('Containment offline. Specimens released.','#ff8a6a');
+  }else if(f.kind==='relay'){
+    s.relays.add(f.label);openFixture(f);SFX.key();msg(f.label+' SEVERED ('+s.relays.size+'/3)','#e7a2f3');
+    if(s.relays.size===3)msg('WARDEN CORE EXPOSED — all weapons effective!','#ffb627');
+  }else if(f.kind==='secret'){
+    if(s.secrets.has(f.label))return;s.secrets.add(f.label);openFixture(f);SFX.pickup();
+    item('armor',G.posX,G.posY);item('rockets',G.posX,G.posY);msg('SECRET FOUND — maintenance cache.','#53ffc1');
+  }else msg('Exposed orange conduit — shoot it.','#ffb627');
+}
+function chapterObjective(){
+  const s=G.systems,def=MAPS[G.level].blackout;
+  if(!s||!def)return 'Find the red keycard, then use the exit switch.';
+  if(s.outage>0)return 'Eliminate the glowing leech to restore power.';
+  if(def.which===0){
+    if(s.cargo<1)return 'USE a cyan Power Switch: select CARGO.';
+    if(!s.plate&&!s.conduit)return 'Use the Pressure Plate or SHOOT the orange Conduit.';
+  }
+  if(def.which===1&&!s.conduit)return 'Pass containment; SHOOT the orange Cryo Conduit.';
+  if(def.which===2){
+    if(G.posY<7&&s.mode!=='reactor')return 'USE a cyan Power Switch: select REACTOR.';
+    if(s.relays.size<3)return 'USE three purple Shield Relays ('+s.relays.size+'/3).';
+    if(G.ents.some(e=>e.kind==='warden'&&!e.dead))return 'Destroy the exposed Warden core.';
+  }
+  return 'Exit unlocked. Find the green switch and USE it.';
+}
+function chapterExitReady(){
+  const s=G.systems;if(!s)return true;
+  const which=MAPS[G.level].blackout.which;
+  return which===0?s.cargo>=1&&(s.plate||s.conduit):which===1?s.conduit:
+    s.relays.size===3&&!G.ents.some(e=>e.kind==='warden'&&!e.dead);
+}
+function gateOccupied(x,y){
+  return Math.hypot(G.posX-x-.5,G.posY-y-.5)<1.1||G.ents.some(e=>e.type==='enemy'&&e.alive&&Math.hypot(e.x-x-.5,e.y-y-.5)<1);
+}
+function updateBlackout(dt){
+  const s=G.systems,def=MAPS[G.level].blackout;if(!s||!def)return;
+  if(s.leech?.dead){s.outage=0;s.leech=null;msg('Leech removed. Power restored.','#25d0ff');}
+  s.outage=Math.max(0,s.outage-dt);
+  if(!s.outage&&s.mode==='cargo')s.cargo=Math.min(1,s.cargo+dt*.5);
+  if(def.plate&&!s.plate){
+    const p=def.plate,heavies=G.ents.filter(e=>e.kind==='bulwark'||e.kind==='brute');
+    if(heavies.some(e=>Math.hypot(e.x-p.x-.5,e.y-p.y-.5)<.85))s.plate=true;
+    // Manual hydraulic override only after all heavy enemies are dead.
+    if(heavies.every(e=>e.dead)&&Math.hypot(G.posX-p.x-.5,G.posY-p.y-.5)<.8){
+      if(!s.taught.has('override')){s.taught.add('override');msg('Hold the plate for 3 seconds: hydraulic override.','#ffb627');}
+      s.override+=dt;if(s.override>=3)s.plate=true;
+    }else s.override=0;
+    if(s.plate){SFX.door();msg('FREIGHT LOCK LATCHED — passage stays open.','#53ffc1');}
+  }
+  for(const gate of def.gates){
+    const d=G.doors.get(gate.y*G.W+gate.x);
+    const open=gate.id==='cargo'?s.cargo>=1:gate.id==='plate'?s.plate:gate.id==='bypass'||gate.id==='cryo'?s.conduit:
+      gate.id==='specimens'?s.mode==='security':s.mode===gate.id;
+    if(s.outage>0)continue;
+    if(gate.id==='cargo')d.open=s.cargo;
+    else if(open)d.open=Math.min(1,d.open+dt*1.2);
+    else if(!gateOccupied(gate.x,gate.y))d.open=Math.max(0,d.open-dt*1.2);
+  }
+  s.floor.clear();
+  if(def.plate)s.floor.set(def.plate.y*G.W+def.plate.x,s.plate?rgb(45,190,118):rgb(219,172,49));
+  for(const h of s.hazards){
+    h.t-=dt;if(h.t<=0)continue;
+    const hot=h.t<=.65;
+    s.floor.set(h.y*G.W+h.x,hot?rgb(255,70,30):rgb(245,185,35));
+    if(hot&&!h.hit&&(G.posX|0)===h.x&&(G.posY|0)===h.y){h.hit=true;hurtPlayer(s.mode==='coolant'?9:18);}
+  }
+  s.hazards=s.hazards.filter(h=>h.t>0);
+}
+function warnFloor(){
+  const s=G.systems;if(!s)return;
+  for(const [dx,dy] of [[0,0],[1,0],[-1,0],[0,1],[0,-1]]){
+    const x=(G.posX|0)+dx,y=(G.posY|0)+dy;
+    if(tileAt(x+.5,y+.5)===T_EMPTY)s.hazards.push({x,y,t:2,hit:false});
+  }
+  tone(.35,180,650,.12,'triangle');msg('SURGE TILES — leave yellow before it turns red!','#ffb627');
+}
+function updateSpecialEnemy(e,dt,see,dist,ux,uy){
+  if(!NEW_ENEMIES[e.kind])return false;
+  if(!e.announced&&see){e.announced=true;msg(ENEMY_HINTS[e.kind],'#ffcf87');
+    const freq={bulwark:90,leech:1100,splitter:170,crawler:420,warden:55,turret:700}[e.kind];tone(.3,freq,freq*.6,.16,'sawtooth');}
+  if(e.kind==='bulwark'){
+    if(e.charge==='windup'){
+      e.chargeT-=dt;if(e.chargeT<=0){e.charge='rush';e.chargeT=1.15;e.chargeHit=false;SFX.launch();}return true;
+    }
+    if(e.charge==='rush'){
+      const x=e.x,y=e.y;moveEnt(e,e.x+Math.cos(e.angle)*6.2*dt,e.y+Math.sin(e.angle)*6.2*dt);e.chargeT-=dt;
+      if(!e.chargeHit&&Math.hypot(G.posX-e.x,G.posY-e.y)<1&&see){hurtPlayer(e.dmg);e.chargeHit=true;}
+      if(e.chargeT<=0||Math.hypot(e.x-x,e.y-y)<.01){e.charge='stunned';e.chargeT=1.4;SFX.boom();}return true;
+    }
+    if(e.charge==='stunned'){e.chargeT-=dt;if(e.chargeT<=0){e.charge='';e.fire=2;}return true;}
+    if(!see)return true;
+    const target=Math.atan2(uy,ux),diff=Math.atan2(Math.sin(target-e.angle),Math.cos(target-e.angle));
+    e.angle+=clamp(diff,-dt*.85,dt*.85);
+    if(e.fire<=0&&dist<9&&Math.abs(diff)<.25){e.charge='windup';e.chargeT=.85;msg('BULWARK CHARGING — sidestep!','#ffb627');}
+    else if(dist>1.2)moveEnt(e,e.x+Math.cos(e.angle)*e.speed*dt,e.y+Math.sin(e.angle)*e.speed*dt);
+    return true;
+  }
+  if(e.kind==='leech'&&G.systems){
+    const panels=MAPS[G.level].blackout.fixtures.filter(f=>f.kind==='power');
+    const p=panels.reduce((a,b)=>Math.hypot(e.x-a.x-.5,e.y-a.y-.5)<Math.hypot(e.x-b.x-.5,e.y-b.y-.5)?a:b);
+    const dx=p.x+.5-e.x,dy=p.y+.5-e.y,d=Math.hypot(dx,dy);
+    if(d<2.1&&e.fire<=0){G.systems.outage=6;G.systems.leech=e;e.fire=12;SFX.plasma();msg('LEECH DRAIN — circuits offline for 6 seconds.','#25d0ff');}
+    if(d>1.4)moveEnt(e,e.x+dx/d*e.speed*dt,e.y+dy/d*e.speed*dt);
+    if(see&&dist<1&&e.fire<=0){hurtPlayer(e.dmg);e.fire=1.4;}return true;
+  }
+  if(e.kind==='warden'){
+    if(!see||G.dead)return true;
+    if(e.fire<=0){
+      e.fire=e.hp<e.maxhp*.4?1.9:2.8;e.attack=(e.attack||0)+1;
+      if(e.attack%2===0)warnFloor();
+      else {const a=Math.atan2(uy,ux);for(const off of [-.24,-.12,0,.12,.24])projectile('plasma',e.x+Math.cos(a)*.8,e.y+Math.sin(a)*.8,Math.cos(a+off),Math.sin(a+off),5.4,e);SFX.plasma();}
+    }return true;
+  }
+  if(e.kind==='turret'){
+    if(!see||G.systems?.conduit||G.systems?.outage>0||G.systems?.mode==='containment')return true;
+    if(e.fire<=0){projectile('plasma',e.x+ux*.4,e.y+uy*.4,ux,uy,6,e);e.fire=e.cd;SFX.plasma();}return true;
+  }
+  return false;
+}
+
+/* Sector-entry saves: only validated inventory is restored, never arbitrary world state. */
+const CHECKPOINT_KEY='sector7.checkpoint.v1';
+function readCheckpoint(){
+  try{
+    const c=JSON.parse(localStorage.getItem(CHECKPOINT_KEY)),l=c?.loadout;
+    if(c?.version!==1||!Number.isInteger(c.level)||c.level<0||c.level>=MAPS.length||!l)return null;
+    if(!Number.isFinite(l.hp)||l.hp<=0||l.hp>100||!Number.isFinite(l.armor)||l.armor<0||l.armor>100)return null;
+    if(!Array.isArray(l.owned)||![4,5].includes(l.owned.length)||!l.owned.every(v=>typeof v==='boolean')||!l.owned[0])return null;
+    if(!Number.isInteger(l.weapon)||l.weapon<0||l.weapon>=WEAPONS.length||!l.owned[l.weapon])return null;
+    for(const [k,max] of Object.entries(AMMO_MAX))if(!Number.isInteger(l.ammo?.[k])||l.ammo[k]<0||l.ammo[k]>max)return null;
+    return {version:1,level:c.level,loadout:{hp:l.hp,armor:l.armor,weapon:l.weapon,owned:[...l.owned],ammo:{bullets:l.ammo.bullets,shells:l.ammo.shells,rockets:l.ammo.rockets}}};
+  }catch{return null;}
+}
+function saveCheckpoint(){
+  try{localStorage.setItem(CHECKPOINT_KEY,JSON.stringify({version:1,level:G.level,loadout:levelEntry}));G.saved=true;}catch{G.saved=false;}
+}
+function restoreLoadout(l){G.hp=l.hp;G.armor=l.armor;G.weapon=l.weapon;G.owned=Array.from({length:WEAPONS.length},(_,i)=>!!l.owned[i]);G.ammo={...l.ammo};}
+function continueCheckpoint(){const c=readCheckpoint();if(!c){msg('No valid checkpoint available.');return;}audioInit();if(AC?.state==='suspended')AC.resume();restoreLoadout(c.loadout);loadLevel(c.level);go();}
+function startBlackout(){
+  audioInit();if(AC?.state==='suspended')AC.resume();if(TOUCH)goFullscreen();
+  restoreLoadout({hp:100,armor:25,weapon:1,owned:[true,true,true,true],ammo:{bullets:90,shells:24,rockets:8}});
+  loadLevel(3);go();
+}
+
 /* ================= audio ================= */
 let AC=null, master=null;
 function audioInit(){
@@ -670,6 +1038,7 @@ const SFX = {
   key:()=>{tone(0.10,600,1000,0.22,'triangle');setTimeout(()=>tone(0.16,1000,1500,0.20,'triangle'),100);},
   exit:()=>{[440,660,880,1320].forEach((f,i)=>setTimeout(()=>tone(0.18,f,f,0.22,'square'),i*110));},
   empty:()=>{tone(0.05,140,110,0.14,'square');},
+  portal:()=>{tone(.22,220,1100,.18,'sine');},
 };
 
 /* ================= weapons ================= */
@@ -678,6 +1047,7 @@ const WEAPONS = [
   {name:'BOOMSTICK', ammo:'shells',  rate:0.82, dmg:78/9, kind:'hit',  pellets:9, spread:0.10, snd:'shotgun', use:1},
   {name:'RIPPER',    ammo:'bullets', rate:0.085,dmg:9,  kind:'hit',  spread:0.045, snd:'chain', use:1},
   {name:'THUMPER',   ammo:'rockets', rate:1.05, dmg:99, kind:'rocket', snd:'launch', use:1},
+  {name:'PORTAL GUN',ammo:null,rate:.4,dmg:0,kind:'portal',snd:'portal'},
 ];
 
 const QUIPS = ['Sanitation complete.','Back to the mothership.','That one was slow.',
@@ -688,7 +1058,7 @@ const QUIPS = ['Sanitation complete.','Back to the mothership.','That one was sl
 const G = {
   mode:'title', level:0, map:null, W:0, H:0,
   posX:0,posY:0,dirX:1,dirY:0,planeX:0,planeY:FOV,pitch:0,bob:0,
-  hp:100, armor:0, keys:{}, weapon:0, owned:[true,false,false,false],
+  hp:100, armor:0, keys:{}, weapon:0, owned:[true,false,false,false,false],
   ammo:{bullets:60, shells:0, rockets:0},
   cool:0, flash:0, hurtFlash:0, pickFlash:0, dead:0,
   ents:[], doors:new Map(), msgs:[], kills:0, totalEnemies:0, secretsExit:null, explored:null,
@@ -702,6 +1072,8 @@ function msg(text,color){ G.msgs.push({text,color:color||'#ffe1a8',t:3.2}); if(G
 function loadLevel(i){
   clearTimeout(deathTimer); deathTimer=null;
   resetInput();
+  G.owned=Array.from({length:WEAPONS.length},(_,i)=>!!G.owned[i]);
+  G.portals=[null,null];G.nextPortal=0;G.portalReady=true;G.needsBriefing=true;
   levelEntry={hp:G.hp,armor:G.armor,weapon:G.weapon,owned:[...G.owned],ammo:{...G.ammo}};
   const M = MAPS[i];
   G.level=i; G.W=M.rows[0].length; G.H=M.rows.length;
@@ -718,6 +1090,8 @@ function loadLevel(i){
     for(let x=0;x<G.W;x++){
       const c = row[x]; let t = T_EMPTY;
       if(c==='#') t=T_TECH; else if(c==='=') t=T_PANEL; else if(c==='x') t=T_RUST;
+      else if(c==='I')t=T_ICE;else if(c==='B')t=T_BIO;else if(c==='K')t=T_CRATE;else if(c==='V')t=T_GLASS;
+      else if(c==='Q')t=T_POWER;else if(c==='C')t=T_CONDUIT;else if(c==='R')t=T_RELAY;else if(c==='S')t=T_SECRET;
       else if(c==='d'){ t=T_DOOR; G.doors.set(y*G.W+x,{open:0,locked:false}); }
       else if(c==='D'){ t=T_LOCK; G.doors.set(y*G.W+x,{open:0,locked:true}); }
       else if(c==='E'){ t=T_EXIT; G.secretsExit={x,y}; }
@@ -727,6 +1101,11 @@ function loadLevel(i){
         case 'P': G.posX=px; G.posY=py; break;
         case 'g': spawnEnemy('grunt',px,py); break;
         case 'b': spawnEnemy('brute',px,py); break;
+        case 'U': spawnEnemy('bulwark',px,py); break;
+        case 'L': spawnEnemy('leech',px,py); break;
+        case 'F': spawnEnemy('splitter',px,py); break;
+        case 'W': spawnEnemy('warden',px,py); break;
+        case 'T': spawnEnemy('turret',px,py); break;
         case 'h': item('health',px,py); break;
         case 'H': item('medkit',px,py); break;
         case 'v': item('armor',px,py); break;
@@ -736,6 +1115,7 @@ function loadLevel(i){
         case '1': item('wShotgun',px,py); break;
         case '2': item('wChain',px,py); break;
         case '3': item('wLaunch',px,py); break;
+        case 'J': item('wPortal',px,py); break;
         case 'k': item('keycard',px,py); break;
       }
     }
@@ -745,6 +1125,7 @@ function loadLevel(i){
   if(tileAt(G.posX+1,G.posY)!==T_EMPTY){ G.dirX=0;G.dirY=1;G.planeX=-FOV;G.planeY=0; }
   msg('SECTOR '+(i+1)+' — '+M.name,'#25d0ff');
   msg('Find the exit switch. Press E on it.','#b9b2c9');
+  initBlackout();saveCheckpoint();
 }
 
 function tileAt(x,y){
@@ -796,14 +1177,14 @@ function hasLOS(ax,ay,bx,by){
 
 /* ================= entities ================= */
 function spawnEnemy(kind,x,y){
-  const base = kind==='brute'
+  const base = NEW_ENEMIES[kind] || (kind==='brute'
     ? {hp:110, speed:2.35, scale:1.02, radius:0.42, melee:true, dmg:17, cd:0.95, sight:16}
-    : {hp:34,  speed:1.55, scale:0.86, radius:0.34, melee:false, dmg:9,  cd:1.5,  sight:18};
-  const diff = 1 + G.level*0.12;
+    : {hp:34,  speed:1.55, scale:0.86, radius:0.34, melee:false, dmg:9,  cd:1.5,  sight:18});
+  const diff = NEW_ENEMIES[kind]?1:1 + Math.min(G.level,2)*0.12;
   G.ents.push({type:'enemy', kind, x, y, hp:base.hp*diff|0, maxhp:base.hp*diff|0,
     speed:base.speed, scale:base.scale, radius:base.radius, melee:base.melee,
     dmg:base.dmg*diff|0, cd:base.cd, sight:base.sight,
-    state:'idle', timer:0, anim:0, fire:0, pain:0, dead:false, dieT:0, alive:true});
+    state:'idle', timer:0, anim:0, fire:0, pain:0, dead:false, dieT:0, alive:true,angle:-Math.PI/2});
   G.totalEnemies++;
 }
 function item(kind,x,y){ G.ents.push({type:'item', kind, x, y, scale:0.32, alive:true, bobT:Math.random()*TAU}); }
@@ -839,12 +1220,30 @@ function hurtPlayer(n){
     deathTimer=setTimeout(()=>{deathTimer=null;if(G.dead) showDead();},1400);
   }
 }
-function damageEnemy(e,n){
+function damageEnemy(e,n,sourceX=G.posX,sourceY=G.posY){
   if(!e.alive || e.dead) return;
+  if(e.kind==='warden'&&G.systems&&G.systems.relays.size<3){
+    if(!G.msgs.some(m=>m.text.startsWith('Shield')))msg('Shield active — USE the three purple relays.','#d997ed');
+    return;
+  }
+  if(e.kind==='bulwark'){
+    const d=Math.hypot(sourceX-e.x,sourceY-e.y);
+    if(d>.01&&((sourceX-e.x)*Math.cos(e.angle)+(sourceY-e.y)*Math.sin(e.angle))/d>-.2)n*=.15;
+  }
   e.hp -= n; e.pain = 0.16;
   if(e.state==='idle') { e.state='chase'; }
   if(e.hp<=0){
     e.dead=true; e.dieT=0; e.state='dead'; G.kills++;
+    if(e.kind==='splitter'){
+      for(let i=0;i<3;i++){
+        const a=i*TAU/3,x=e.x+Math.cos(a)*.42,y=e.y+Math.sin(a)*.42;
+        spawnEnemy('crawler',blocked(x,y,.15)?e.x:x,blocked(x,y,.15)?e.y:y);
+        G.ents[G.ents.length-1].state='chase';
+      }msg('SPLITTER BURST — three crawlers!','#ffcf87');
+    }
+    if(e.kind==='warden'&&G.systems){G.systems.hazards=[];G.systems.floor.clear();
+      for(const p of G.ents)if(p.type==='proj'&&p.owner===e)p.alive=false;
+      msg('WARDEN DOWN. The exit is unlocked.','#53ffc1');}
     SFX.die();
     if(G.time - G.lastQuip > 6 && Math.random()<0.5){
       G.lastQuip = G.time;
@@ -856,7 +1255,7 @@ function splash(x,y,rad,dmg){
   for(const e of G.ents){
     if(e.type!=='enemy'||e.dead) continue;
     const d=Math.hypot(e.x-x,e.y-y);
-    if(d<rad && hasLOS(x,y,e.x,e.y)) damageEnemy(e, dmg*(1-d/rad));
+    if(d<rad && hasLOS(x,y,e.x,e.y)) damageEnemy(e, dmg*(1-d/rad),x,y);
   }
   const pd=Math.hypot(G.posX-x,G.posY-y);
   if(pd<rad*0.8 && hasLOS(x,y,G.posX,G.posY)) hurtPlayer(dmg*0.4*(1-pd/(rad*0.8)));
@@ -868,13 +1267,51 @@ function hitscan(dx,dy,dmg,maxD){
   maxD = maxD||24;
   for(let s=0.2; s<maxD; s+=0.06){
     const x=G.posX+dx*s, y=G.posY+dy*s;
-    if(sightBlocked(tileAt(x,y), x|0, y|0)) return Math.max(0,s-0.06);
+    if(sightBlocked(tileAt(x,y), x|0, y|0)){
+      if(tileAt(x,y)===T_CONDUIT)cutConduit();
+      return Math.max(0,s-0.06);
+    }
     for(const e of G.ents){
       if(e.type!=='enemy'||e.dead) continue;
       if(Math.hypot(e.x-x,e.y-y) < e.radius+0.06){ damageEnemy(e,dmg); return s; }
     }
   }
   return maxD;
+}
+function placePortal(){
+  const dx=G.dirX,dy=G.dirY;
+  let prevX=G.posX|0,prevY=G.posY|0;
+  for(let d=.15;d<18;d+=.06){
+    const x=G.posX+dx*d,y=G.posY+dy*d,t=tileAt(x,y),tx=x|0,ty=y|0;
+    if(sightBlocked(t,tx,ty)){
+      if(![T_TECH,T_PANEL,T_RUST,T_ICE,T_BIO,T_CRATE].includes(t)){
+        msg('Portal rejected: use an ordinary wall, not machinery or glass.');return;
+      }
+      const outX=tx!==prevX?-Math.sign(dx):0,outY=outX?0:-Math.sign(dy);
+      const px=tx+.5+outX*.9,py=ty+.5+outY*.9;
+      const other=G.portals[1-G.nextPortal];
+      if(blocked(px,py)||!hasLOS(G.posX,G.posY,px,py)||other&&Math.hypot(other.x-px,other.y-py)<1){
+        msg('Portal needs clear floor space and a separate wall position.');return;
+      }
+      if(G.portals[G.nextPortal])G.portals[G.nextPortal].alive=false;
+      const p={type:'portal',kind:G.nextPortal===0?'portalBlue':'portalAmber',x:px,y:py,
+        outX,outY,wallX:tx,wallY:ty,scale:.9,alive:true};
+      G.portals[G.nextPortal]=p;G.ents.push(p);G.nextPortal=1-G.nextPortal;
+      msg((p.kind==='portalBlue'?'BLUE':'AMBER')+' portal set. '+(other?'Walk into either ring.':'Fire again for its partner.'),'#72e7eb');return;
+    }
+    prevX=tx;prevY=ty;
+  }
+  msg('No portal surface within range.');
+}
+function updatePortals(){
+  if(!G.portals?.every(Boolean))return;
+  const near=G.portals.findIndex(p=>Math.hypot(G.posX-p.x,G.posY-p.y)<.6);
+  if(near<0){G.portalReady=true;return;}
+  if(!G.portalReady)return;
+  const exit=G.portals[1-near],x=exit.x+exit.outX*.4,y=exit.y+exit.outY*.4;
+  if(blocked(x,y)){msg('Portal exit obstructed. Reposition the amber or blue ring.');G.portalReady=false;return;}
+  G.posX=x;G.posY=y;rotate(Math.atan2(exit.outY,exit.outX)-Math.atan2(G.dirY,G.dirX));
+  G.portalReady=false;G.pickFlash=.5;SFX.portal();resetInput();
 }
 function aimAssist(ang){
   if(!TOUCH) return ang;
@@ -906,6 +1343,7 @@ function fire(){
   G.cool = w.rate; G.flash = 0.09; G.recoil = 1;
   if(w.ammo) G.ammo[w.ammo] -= (w.use||1);
   SFX[w.snd]();
+  if(w.kind==='portal'){placePortal();return;}
   const ang = aimAssist(Math.atan2(G.dirY,G.dirX));
   if(w.kind==='hit'){
     const n = w.pellets||1;
@@ -983,7 +1421,7 @@ if(stageEl.addEventListener){
   stageEl.addEventListener('touchcancel',onTouchEnd,   {passive:false});
 }
 function cycleWeapon(){
-  for(let i=1;i<=4;i++){ const n=(G.weapon+i)%4; if(G.owned[n]){ selectWeapon(n); return; } }
+  for(let i=1;i<=WEAPONS.length;i++){ const n=(G.weapon+i)%WEAPONS.length; if(G.owned[n]){ selectWeapon(n); return; } }
   msg('No other weapons yet.','#8f88a3');
 }
 function setTouchUI(on){
@@ -1048,6 +1486,7 @@ addEventListener('keydown',e=>{
   if(e.code==='Digit2') selectWeapon(1);
   if(e.code==='Digit3') selectWeapon(2);
   if(e.code==='Digit4') selectWeapon(3);
+  if(e.code==='Digit5') selectWeapon(4);
   if(e.code==='KeyE') useAction();
   if(e.code==='Escape') pause();
 });
@@ -1062,7 +1501,7 @@ addEventListener('mousemove',e=>{
 addEventListener('wheel',e=>{
   if(G.mode!=='play') return;
   const dir = e.deltaY>0?1:-1;
-  for(let i=1;i<=4;i++){ const n=(G.weapon+dir*i+8)%4; if(G.owned[n]){ selectWeapon(n); break; } }
+  for(let i=1;i<=WEAPONS.length;i++){ const n=(G.weapon+dir*i+WEAPONS.length*2)%WEAPONS.length; if(G.owned[n]){ selectWeapon(n); break; } }
 },{passive:true});
 document.addEventListener('pointerlockchange',()=>{
   if(!TOUCH && (G.mode==='play'||G.mode==='map') && document.pointerLockElement!==screenCv) loseFocus();
@@ -1082,9 +1521,12 @@ function useAction(){
   if(G.mode!=='play'||G.dead) return;
   const tx=(G.posX+G.dirX*0.9)|0, ty=(G.posY+G.dirY*0.9)|0;
   const t=tileAt(tx+0.5,ty+0.5);
+  const f=MAPS[G.level].blackout?.fixtures.find(f=>f.x===tx&&f.y===ty&&G.map[ty*G.W+tx]!==T_EMPTY);
+  if(f){useFixture(f);return;}
   if(t===T_EXIT){ levelComplete(); return; }
   const d=G.doors.get(ty*G.W+tx);
   if(d){
+    if(d.controlled){msg(chapterObjective(),'#25d0ff');return;}
     if(d.locked && !G.keys.red){ SFX.locked(); msg('Locked. Needs the red keycard.','#ff8a6a'); }
     else if(d.open<0.1){ d.open=0.001; SFX.door(); }
     return;
@@ -1104,10 +1546,12 @@ function update(dt){
   while(G.msgs.length && G.msgs[0].t<=0) G.msgs.shift();
 
   if(!G.dead) movePlayer(dt);
+  if(!G.dead)updatePortals();
   const pcx=G.posX|0, pcy=G.posY|0;
   for(let yy=pcy-1;yy<=pcy+1;yy++) for(let xx=pcx-1;xx<=pcx+1;xx++)
     if(xx>=0&&yy>=0&&xx<G.W&&yy<G.H) G.explored[yy*G.W+xx]=1;
   updateDoors(dt);
+  updateBlackout(dt);
 
   if(G.shooting && G.cool<=0 && !G.dead) fire();
 
@@ -1154,12 +1598,13 @@ function movePlayer(dt){
   // auto-open unlocked doors you walk into
   const tx=(G.posX+G.dirX*0.85)|0, ty=(G.posY+G.dirY*0.85)|0;
   const d=G.doors.get(ty*G.W+tx);
-  if(d && !d.locked && d.open<0.001 && (keys.KeyW||keys.KeyS||stickMag>0.2)){ d.open=0.001; SFX.door(); }
-  if(d && d.locked && G.keys.red && d.open<0.001){ d.open=0.001; SFX.door(); msg('Red keycard accepted.','#25d0ff'); }
+  if(d && !d.controlled && !d.locked && d.open<0.001 && (keys.KeyW||keys.KeyS||stickMag>0.2)){ d.open=0.001; SFX.door(); }
+  if(d && !d.controlled && d.locked && G.keys.red && d.open<0.001){ d.open=0.001; SFX.door(); msg('Red keycard accepted.','#25d0ff'); }
 }
 
 function updateDoors(dt){
   for(const [k,d] of G.doors){
+    if(d.controlled)continue;
     if(d.open>0 && d.open<1) d.open = Math.min(1, d.open+dt*1.1);
     if(d.open>=1){
       d.hold = (d.hold||0)+dt;
@@ -1186,6 +1631,11 @@ function updateEnemy(e,dt){
   const dx=G.posX-e.x, dy=G.posY-e.y;
   const dist=Math.hypot(dx,dy);
   const see = dist<e.sight && hasLOS(e.x,e.y,G.posX,G.posY) && !G.dead;
+  const ux = dist>0.01?dx/dist:0, uy = dist>0.01?dy/dist:0;
+  if(NEW_ENEMIES[e.kind]){
+    if(see)e.state='chase';e.anim+=dt*6;
+    if(updateSpecialEnemy(e,dt,see,dist,ux,uy))return;
+  }
 
   if(e.state==='idle'){
     if(see){ e.state='chase'; tone(0.20,e.kind==='brute'?110:300,e.kind==='brute'?70:180,0.16,'sawtooth'); }
@@ -1197,8 +1647,6 @@ function updateEnemy(e,dt){
   } else e.timer=0;
 
   e.anim += dt*(e.kind==='brute'?5:6);
-  const ux = dist>0.01?dx/dist:0, uy = dist>0.01?dy/dist:0;
-
   if(e.melee){
     if(dist>1.15) moveEnt(e, e.x+ux*e.speed*dt, e.y+uy*e.speed*dt);
     else if(e.fire<=0 && see){ e.fire=e.cd; e.swipe=0.28; hurtPlayer(e.dmg); }
@@ -1237,6 +1685,7 @@ function updateProj(p,dt){
   for(let i=0;i<steps;i++){
     p.x += p.dx*sd; p.y += p.dy*sd;
     if(sightBlocked(tileAt(p.x,p.y), p.x|0, p.y|0)){
+      if(p.owner==='player'&&tileAt(p.x,p.y)===T_CONDUIT)cutConduit();
       p.alive=false;
       if(p.kind==='rocket') splash(p.x-p.dx*0.2, p.y-p.dy*0.2, 2.8, WEAPONS[3].dmg);
       else { blast(p.x,p.y); }
@@ -1283,6 +1732,7 @@ function checkPickup(it){
       selectWeapon(2); text='RIPPER acquired'; break;
     case 'wLaunch': G.owned[3]=true; G.ammo.rockets=Math.max(G.ammo.rockets,8);
       selectWeapon(3); text='THUMPER acquired'; break;
+    case 'wPortal':G.owned[4]=true;selectWeapon(4);text='PORTAL GUN — fire blue, then amber; walk through.';break;
     case 'keycard': G.keys.red=true; text='Red keycard'; SFX.key(); break;
   }
   if(!taken) return;
@@ -1296,13 +1746,15 @@ function renderWorld(){
   const half = RH/2;
   const exp = G.explored;
   const pitch = G.pitch + Math.sin(G.bob)*1.6;
+  const light=G.systems?(G.systems.outage>0?.35:G.level===3&&G.systems.mode!=='lighting'?.6:.85):1;
+  glassDepth.fill(0);
 
   // precompute floor/ceiling distance + shade per screen row
   for(let y=0;y<RH;y++){
     const p = y - half - pitch;
     const d = half / (p===0 ? 0.0001 : Math.abs(p));
     rowDist[y] = d;
-    let f = 1 - d/14;
+    let f = (1 - d/14)*light;
     rowLevel[y] = clamp((f*(SHADES-1))|0, 0, SHADES-1);
   }
 
@@ -1326,6 +1778,7 @@ function renderWorld(){
       const t = G.map[mapY*G.W+mapX];
       if(t===T_EMPTY) continue;
       perp = side===0 ? (sdx-ddx) : (sdy-ddy);
+      if(t===T_GLASS){if(!glassDepth[x])glassDepth[x]=perp;continue;}
       wallX = side===0 ? G.posY + perp*rdy : G.posX + perp*rdx;
       wallX -= Math.floor(wallX);
       if(t===T_DOOR||t===T_LOCK){
@@ -1355,9 +1808,10 @@ function renderWorld(){
     let texX = ((wallX - doorOpen)*TS)|0;
     if(texX<0) texX=0; if(texX>TS-1) texX=TS-1;
     if((side===0 && rdx>0) || (side===1 && rdy<0)) texX = TS-1-texX;
-    let lvl = clamp(((1 - perp/15)*(SHADES-1))|0, 0, SHADES-1);
+    let lvl = clamp(((1 - perp/15)*light*(SHADES-1))|0, 0, SHADES-1);
     if(side===1) lvl = Math.max(0, lvl-4);
-    const tex = (TEXS[tile]||TEXS[T_TECH])[lvl];
+    if(tile===T_POWER||tile===T_CONDUIT||tile===T_RELAY)lvl=Math.max(15,lvl);
+    const tex = (TEXS[tile===T_DOOR&&G.doors.get(mapY*G.W+mapX)?.id==='cargo'?T_CRATE:tile]||TEXS[T_TECH])[lvl];
     const stepT = TS/lineH;
     let texPos = (clipS - pitch - half + lineH/2)*stepT;
     for(let y=clipS;y<=clipE;y++){
@@ -1371,12 +1825,32 @@ function renderWorld(){
       const fx=G.posX+rdx*d, fy=G.posY+rdy*d;
       const tx=((fx-Math.floor(fx))*TS)|0, ty=((fy-Math.floor(fy))*TS)|0;
       buf[y*RW+x] = FLOORS[rowLevel[y]][ty*TS+tx];
+      const mark=G.systems?.floor.get((fy|0)*G.W+(fx|0));
+      if(mark && (((fx*10)|0)+((fy*10)|0))%4<2)buf[y*RW+x]=shadeC(mark,Math.max(.5,1-d/18));
     }
   }
   renderSprites(pitch);
+  // Armored viewing windows show enemies but still block bullets and movement.
+  for(let x=0;x<RW;x++){
+    const d=glassDepth[x];if(!d)continue;
+    const h=RH/d,top=half+pitch-h/2,bottom=top+h;
+    for(let y=Math.max(0,Math.ceil(top));y<Math.min(RH,bottom);y++){
+      const c=buf[y*RW+x],a=y-top<h*.08||bottom-y<h*.08?.75:.16;
+      buf[y*RW+x]=rgb((c&255)*(1-a)+55*a,((c>>>8)&255)*(1-a)+130*a,((c>>>16)&255)*(1-a)+150*a);
+    }
+  }
 }
 
 function spriteFrame(e){
+  if(e.type==='portal')return SPRITES[e.kind];
+  if(e.type==='decor')return SPRITES[e.kind];
+  if(NEW_ENEMIES[e.kind]){
+    let pose=e.dead?5:e.pain>0?4:e.charge==='windup'||e.charge==='rush'?3:e.state==='idle'?0:1+(e.anim|0)%2;
+    if(!e.dead&&e.kind==='bulwark'&&(G.posX-e.x)*Math.cos(e.angle)+(G.posY-e.y)*Math.sin(e.angle)<0)pose=6;
+    if(!e.dead&&e.kind==='warden')pose=G.systems?.relays.size===3?6:3;
+    if(!e.dead&&e.kind==='leech'&&G.systems?.leech===e&&G.systems.outage>0)pose=3;
+    return SPRITES[e.kind+'Frames'][pose];
+  }
   if(e.type==='tracer'||e.type==='trail') return SPRITES[e.kind];
   if(e.type==='item') return SPRITES[e.kind];
   if(e.type==='proj') return SPRITES[e.kind];
@@ -1430,7 +1904,7 @@ function renderSprites(pitch){
 
     const dist = Math.sqrt(sx*sx+sy*sy);
     let f = clamp(1 - dist/15, 0.16, 1);
-    if(e.type==='fx' || e.type==='proj' || e.type==='tracer' || e.type==='trail') f = 1;
+    if(e.type==='fx' || e.type==='proj' || e.type==='tracer' || e.type==='trail'||e.type==='portal'||e.kind==='leech') f = 1;
     const opacity=(e.type==='tracer'||e.type==='trail')?clamp(e.life/e.duration,0,1):1;
 
     const y0=Math.max(0,startY), y1=Math.min(RH-1,startY+h);
@@ -1484,11 +1958,14 @@ function drawWeapon(){
     for(let i=0;i<3;i++) g.fillRect(cx-46,by-92+((i+spin)%3)*13,12,9);
     g.fillStyle=dark;  g.fillRect(cx-52,by-90,10,32);
     g.fillStyle=wood;  g.fillRect(cx-6,by-56,26,56);
-  } else {
+  } else if(G.weapon===3){
     g.fillStyle='#2f4a3a'; g.fillRect(cx-56,by-100,84,26);
     g.fillStyle='#0d1014'; g.fillRect(cx-62,by-100,10,26);
     g.fillStyle=hilite;   g.fillRect(cx-40,by-106,24,7);
     g.fillStyle=dark;     g.fillRect(cx-10,by-74,30,54);
+  } else {
+    g.fillStyle='#d0d8df';g.fillRect(cx-35,by-80,65,40);g.fillStyle='#344352';g.fillRect(cx-8,by-42,20,42);
+    const col=G.nextPortal===0?'#25d0ff':'#ffb627';ell(g,cx-22,by-81,21,13,col);ell(g,cx-22,by-81,13,7,'#101828');
   }
 
   if(G.flash>0){
@@ -1529,11 +2006,42 @@ function drawHUD(){
   g.textAlign='left';
   g.font='bold 15px "DejaVu Sans Mono",monospace';
   const my = (TOUCH || SW<900) ? 104 : 34;
-  G.msgs.forEach((m,i)=>{
+  let messageY=my;
+  (G.systems?G.msgs.slice(-2):G.msgs).forEach((m,i)=>{
     g.globalAlpha=clamp(m.t,0,1); g.fillStyle=m.color;
-    g.fillText(m.text, 24, my+i*22); g.globalAlpha=1;
+    if(G.systems){g.font='bold 12px "DejaVu Sans Mono",monospace';messageY=wrapText(g,m.text,24,messageY,Math.min(SW-48,450))+4;}
+    else g.fillText(m.text,24,my+i*22);
+    g.globalAlpha=1;
   });
   drawMinimap();
+  drawChapterHUD(g);
+}
+
+function wrapText(g,text,x,y,width,lineHeight=16){
+  const limit=Math.max(12,Math.floor(width/7.3));let line='';
+  for(const word of text.split(' ')){
+    if(line.length+word.length+1>limit){g.fillText(line,x,y);y+=lineHeight;line='';}
+    line+=(line?' ':'')+word;
+  }if(line)g.fillText(line,x,y);
+  return y+lineHeight;
+}
+function drawChapterHUD(g){
+  if(!G.systems)return;
+  const width=Math.min(SW-32,500),x=(SW-width)/2,y=SH-(TOUCH?180:134);
+  g.fillStyle='rgba(6,9,19,.78)';g.fillRect(x-8,y-16,width+16,62);
+  g.textAlign='left';g.font='bold 12px "DejaVu Sans Mono",monospace';g.fillStyle='#72e7eb';
+  const state=G.systems.outage>0?'POWER DRAINED':G.systems.mode.toUpperCase();
+  g.fillText(state+' · '+(TOUCH?'MAP':'TAB')+': OBJECTIVE',x,y);
+  const near=MAPS[G.level].blackout.fixtures.find(f=>G.map[f.y*G.W+f.x]!==T_EMPTY&&Math.hypot(G.posX-f.x-.5,G.posY-f.y-.5)<1.65);
+  const label=near?({power:'Power Switch: ',conduit:'Conduit: ',relay:'Shield Relay: ',secret:'Service Vent: '}[near.kind]+near.label):chapterObjective();
+  g.fillStyle='#f2ecdf';wrapText(g,G.weapon===4?'FIRE → '+(G.nextPortal===0?'BLUE':'AMBER')+' portal · walk through linked rings':label,x,y+18,width);
+  const boss=G.ents.find(e=>e.kind==='warden'&&!e.dead);
+  if(boss&&G.posY>7){
+    const bw=Math.min(SW-40,330),bx=(SW-bw)/2,by=(TOUCH||SW<900)?178:82;
+    g.fillStyle='#0a0611';g.fillRect(bx-7,by,bw+14,39);
+    g.fillStyle='#eda5de';g.textAlign='center';g.fillText('WARDEN · '+(G.systems.relays.size<3?'SHIELDED':'CORE EXPOSED'),SW/2,by+14);
+    bar(g,bx,by+21,bw,9,boss.hp/boss.maxhp,'#d45c9e');g.textAlign='left';
+  }
 }
 
 function hudBar(g){
@@ -1553,8 +2061,8 @@ function hudBar(g){
   g.fillStyle=(w.ammo&&G.ammo[w.ammo]<=5)?'#e03a3a':'#ffb627';
   g.fillText(at,386,by+52);
   g.font='bold 12px "DejaVu Sans Mono",monospace';
-  const slots=SW-460;
-  for(let i=0;i<4;i++){
+  const slots=SW-490;
+  for(let i=0;i<WEAPONS.length;i++){
     const x=slots+i*44;
     g.fillStyle=G.weapon===i?'#ffb627':(G.owned[i]?'#4a4460':'#221f31');
     g.fillRect(x,by+26,34,24);
@@ -1635,7 +2143,7 @@ function drawAutomap(){
   g.drawImage(bufCv,0,0,SW,SH);
   g.fillStyle='rgba(6,4,12,.90)'; g.fillRect(0,0,SW,SH);
 
-  const top=70, bot=TOUCH?54:62, side=44;
+  const top=G.systems?142:86, bot=TOUCH?54:62, side=24;
   const s=Math.min((SW-side*2)/G.W, (SH-top-bot)/G.H);
   const ox=Math.round((SW-G.W*s)/2), oy=Math.round(top+((SH-top-bot)-G.H*s)/2);
   const pulse=0.55+0.45*Math.sin(G.time*4);
@@ -1674,6 +2182,18 @@ function drawAutomap(){
     }
   }
 
+  if(G.systems){
+    g.font='bold 12px "DejaVu Sans Mono",monospace';g.textAlign='center';
+    for(const f of MAPS[G.level].blackout.fixtures){
+      if(G.map[f.y*G.W+f.x]===T_EMPTY||(f.kind==='secret'&&!G.explored[f.y*G.W+f.x]))continue;
+      g.fillStyle={power:'#25d0ff',relay:'#eda5de',conduit:'#ffb627',secret:'#aac7be'}[f.kind];
+      g.fillRect(ox+f.x*s,oy+f.y*s,s,s);g.fillStyle='#080c14';
+      g.fillText({power:'P',relay:'R',conduit:'C',secret:'?'}[f.kind],ox+(f.x+.5)*s,oy+(f.y+.8)*s);
+    }
+    const plate=MAPS[G.level].blackout.plate;
+    if(plate){g.fillStyle='#ffd66a';g.strokeRect(ox+plate.x*s,oy+plate.y*s,s,s);}
+  }
+
   // player arrow
   const px=ox+G.posX*s, py=oy+G.posY*s, r=Math.max(6,s*0.62);
   g.fillStyle='#ffe1a8';
@@ -1687,12 +2207,16 @@ function drawAutomap(){
   // header
   g.textAlign='left'; g.textBaseline='alphabetic';
   g.fillStyle='#ffb627'; g.font='bold 20px "DejaVu Sans Mono",monospace';
-  g.fillText('SECTOR '+(G.level+1)+' \u2014 '+MAPS[G.level].name, side, 40);
+  g.fillText('SECTOR '+(G.level+1)+' \u2014 '+MAPS[G.level].name, side, 30,SW-side*2);
   const mins=(G.time/60)|0, secs=(G.time%60)|0;
   g.fillStyle='#8f88a3'; g.font='bold 13px "DejaVu Sans Mono",monospace';
-  g.textAlign='right';
+  g.textAlign='left';
   g.fillText(`${G.kills}/${G.totalEnemies} down   ${mins}:${String(secs).padStart(2,'0')}   ` +
-             (G.keys.red?'RED KEYCARD HELD':'no keycard yet'), SW-side, 40);
+             (G.systems?(G.saved?'CHECKPOINT SAVED':'SAVE UNAVAILABLE'):(G.keys.red?'RED KEYCARD HELD':'no keycard yet')), side, 52);
+  if(G.systems){
+    g.fillStyle='#72e7eb';wrapText(g,chapterObjective(),side,75,SW-side*2);
+    g.fillStyle='#a9a2b8';wrapText(g,'P Power Switch · C Conduit · R Shield Relay · ? Vent',side,112,SW-side*2,14);
+  }
 
   // legend + close hint
   const ly=SH-(TOUCH?22:26);
@@ -1763,7 +2287,7 @@ requestAnimationFrame(frame);
 /* ================= flow ================= */
 const P = id => document.getElementById(id);
 function panel(id){
-  ['p-title','p-pause','p-dead','p-clear','p-settings'].forEach(p=>P(p).classList.toggle('on', p===id));
+  ['p-title','p-pause','p-dead','p-clear','p-settings','p-guide','p-briefing'].forEach(p=>P(p).classList.toggle('on', p===id));
 }
 function goFullscreen(){
   // must be the document element: fullscreening #stage would hide the touch overlay,
@@ -1781,11 +2305,12 @@ function startGame(){
   audioInit();
   if(AC && AC.state==='suspended' && AC.resume) AC.resume();
   if(TOUCH) goFullscreen();
-  G.hp=100; G.armor=0; G.weapon=0; G.owned=[true,false,false,false];
+  G.hp=100; G.armor=0; G.weapon=0; G.owned=[true,false,false,false,false];
   G.ammo={bullets:60, shells:0, rockets:0};
   loadLevel(0); go();
 }
 function go(){
+  if(G.needsBriefing){showBriefing();return;}
   resetInput();
   G.mode='play'; panel(null); G.shooting=false; warmup=0;
   last=performance.now();
@@ -1813,6 +2338,7 @@ function showDead(){
 }
 function levelComplete(){
   if(G.mode!=='play'||G.dead) return;
+  if(!chapterExitReady()){msg(chapterObjective(),'#ffb627');return;}
   resetInput();
   SFX.exit();
   G.mode='clear'; G.shooting=false;
@@ -1820,12 +2346,14 @@ function levelComplete(){
   document.exitPointerLock && document.exitPointerLock();
   const lastLevel = G.level >= MAPS.length-1;
   const mins=(G.time/60)|0, secs=(G.time%60)|0;
-  P('clear-tag').textContent = lastLevel ? 'OUTPOST RECLAIMED' : 'SECTOR SECURED';
+  P('clear-tag').textContent = lastLevel ? 'BLACKOUT ENDED' : G.level===2?'A SIGNAL FROM BELOW':'SECTOR SECURED';
   P('clear-title').textContent = lastLevel ? 'YOU MADE IT' : MAPS[G.level].name + ' CLEAR';
   P('clear-stats').textContent =
     `${G.kills}/${G.totalEnemies} hostiles down in ${mins}:${String(secs).padStart(2,'0')} (par ${MAPS[G.level].par}). ` +
-    (lastLevel ? 'The lights are back on. Command owes you a very long weekend.'
+    (lastLevel ? 'The Warden is silent. The outpost is finally yours.'
+               : G.level===2?'Power restored. Something beneath the freight decks just woke up. Blackout Protocol begins.'
                : `${G.hp} health and ${G.armor} armor carried forward.`);
+  if(lastLevel){try{localStorage.removeItem(CHECKPOINT_KEY);}catch{}}
   P('btn-next').textContent = lastLevel ? 'PLAY AGAIN' : 'KEEP GOING';
   panel('p-clear');
 }
@@ -1845,7 +2373,7 @@ function applyControls(){
     '<b>MAP</b><span>full map (pauses)</span>'+
     '<b>II</b><span>pause</span>' : desktopKeys;
   const fine=document.querySelector('.fine');
-  if(fine) fine.textContent=TOUCH?'build 5 · automap · turn your phone sideways':'build 5 · automap · keyboard and mouse';
+  if(fine) fine.textContent=TOUCH?'build 6 · Blackout Protocol · turn your phone sideways':'build 6 · Blackout Protocol · keyboard and mouse';
 }
 applyControls();
 let settingsReturn='p-title';
@@ -1861,11 +2389,21 @@ P('setting-volume').oninput=e=>{settings.volume=Number(e.target.value)/100;if(ma
 P('setting-sensitivity').oninput=e=>{settings.sensitivity=Number(e.target.value);saveSettings();};
 P('setting-controls').onchange=e=>{settings.controls=e.target.value;applyControls();saveSettings();};
 P('btn-start').onclick = startGame;
+P('btn-enter').onclick=()=>{G.needsBriefing=false;go();};
+let guideReturn='p-title';
+function showGuide(from){guideReturn=from;P('guide-cards').innerHTML=guideCards(Object.keys(FIELD_GUIDE));drawGuideIcons(P('guide-cards'));panel('p-guide');P('p-guide').scrollTop=0;P('btn-guide-back').focus({preventScroll:true});}
+P('btn-guide-title').onclick=()=>showGuide('p-title');P('btn-guide-pause').onclick=()=>showGuide('p-pause');
+P('btn-guide-back').onclick=()=>{panel(guideReturn);P(guideReturn==='p-title'?'btn-start':'btn-resume').focus();};
+P('btn-blackout').onclick=startBlackout;
+const checkpoint=readCheckpoint();
+P('btn-continue').hidden=!checkpoint;
+if(checkpoint)P('btn-continue').textContent='CONTINUE · '+MAPS[checkpoint.level].name;
+P('btn-continue').onclick=continueCheckpoint;
 P('btn-resume').onclick = go;
 P('btn-map').onclick = () => { go(); toggleMap(); };
 P('btn-retry').onclick = () => {
   Object.assign(G,{...levelEntry,owned:[...levelEntry.owned],ammo:{...levelEntry.ammo}});
-  loadLevel(G.level); go();
+  loadLevel(G.level);G.needsBriefing=false;go();
 };
 P('btn-next').onclick = () => {
   if(G.level >= MAPS.length-1){ startGame(); }

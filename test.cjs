@@ -5,6 +5,7 @@ const vm = require('node:vm');
 const html = fs.readFileSync(`${__dirname}/index.html`, 'utf8');
 const source = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 const elements = new Map(), timers = new Map(), listeners = {};
+const storage=new Map();
 let timerId = 0;
 const noop = () => {};
 const context2d = new Proxy({
@@ -32,7 +33,7 @@ const checks = String.raw`
   assert.equal(WEAPONS[3].dmg,99);
   for(const name of Object.keys(SFX)) SFX[name]=()=>{};
   let emptySounds=0; SFX.empty=()=>emptySounds++;
-  startGame=()=>{};
+  audioInit=()=>{};
   loadLevel(0); G.mode='play'; G.weapon=1; G.ammo.shells=0;
   for(let i=0;i<60;i++){G.cool=Math.max(0,G.cool-1/60);if(G.cool===0)fire();}
   assert(emptySounds>=3 && emptySounds<=4);
@@ -106,7 +107,7 @@ const checks = String.raw`
   assert.equal(timers.size,0);staleDeath();assert.equal(G.mode,'play');
   G.ammo.shells=1;document.getElementById('btn-retry').onclick();assert.equal(G.ammo.shells,8);
 
-  for(let i=0;i<MAPS.length;i++){
+  for(let i=0;i<3;i++){
     loadLevel(i);const rows=MAPS[i].rows;assert(rows.every(r=>r.length===G.W));
     const start=[G.posX|0,G.posY|0];
     function flood(unlocked){
@@ -123,16 +124,110 @@ const checks = String.raw`
     assert([[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy])=>reachable.has([exit.x+dx,exit.y+dy].join(','))));
     renderWorld();drawHUD();
   }
+  // Walkable routes use real collision radii and current machinery state.
+  function reachableFromStart(){
+    const start=[3,3],q=[start],seen=new Set([start.join(',')]);
+    for(const [x,y] of q)for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+      const nx=x+dx,ny=y+dy,k=nx+','+ny;
+      if(nx<0||ny<0||nx>=G.W||ny>=G.H||seen.has(k)||blocked(nx+.5,ny+.5))continue;
+      seen.add(k);q.push([nx,ny]);
+    }return seen;
+  }
+  function canUse(f,reachable){return [[1,0],[-1,0],[0,1],[0,-1]].some(([dx,dy])=>reachable.has([f.x+dx,f.y+dy].join(',')));}
+  function settle(){for(let j=0;j<100;j++)updateBlackout(.05);}
+  for(let i=3;i<6;i++){
+    restoreLoadout({hp:100,armor:25,weapon:1,owned:[true,true,true,true],ammo:{bullets:90,shells:24,rockets:8}});
+    loadLevel(i);G.mode='play';const def=MAPS[i].blackout;
+    assert(MAPS[i].rows.every(r=>r.length===G.W));
+    assert.equal(chapterExitReady(),false);
+    for(const e of G.ents)if(e.type==='enemy')assert(!blocked(e.x,e.y,e.radius),'enemy starts in a wall: '+i+' '+e.kind);
+    const firstPanel=def.fixtures.find(f=>f.kind==='power');assert(canUse(firstPanel,reachableFromStart()));
+    useFixture(firstPanel);settle();
+    let reach=reachableFromStart();
+    if(i===3){
+      assert(reach.has('18,15'),'plate reachable after cargo movement');
+      const heavy=G.ents.find(e=>e.kind==='bulwark'),hp=heavy.hp;
+      heavy.angle=0;damageEnemy(heavy,20,heavy.x+2,heavy.y);assert.equal(heavy.hp,hp-3);
+      damageEnemy(heavy,20,heavy.x-2,heavy.y);assert.equal(heavy.hp,hp-23);
+      G.posX=heavy.x+3;G.posY=heavy.y;heavy.fire=0;updateEnemy(heavy,.05);
+      assert.equal(heavy.charge,'windup');updateEnemy(heavy,.9);assert.equal(heavy.charge,'rush');
+      const chargeX=heavy.x;updateEnemy(heavy,.05);assert(heavy.x>chargeX);
+      heavy.x=18.5;heavy.y=15.5;settle();assert(G.systems.plate);assert(chapterExitReady());
+      loadLevel(i);G.mode='play';useFixture(firstPanel);settle();
+      const conduit=def.fixtures.find(f=>f.kind==='conduit');assert(canUse(conduit,reachableFromStart()));
+      G.posX=conduit.x+.5;G.posY=conduit.y+1.5;hitscan(0,-1,14);settle();
+      assert(G.systems.conduit);assert(chapterExitReady(),'sidearm-only bypass works');
+      // Killing the heavy away from the plate still permits a manual override.
+      loadLevel(i);G.mode='play';useFixture(firstPanel);settle();
+      const h=G.ents.find(e=>e.kind==='bulwark');damageEnemy(h,10000,h.x,h.y+2);
+      G.posX=18.5;G.posY=15.5;settle();assert(G.systems.plate);
+    }else if(i===4){
+      const conduit=def.fixtures.find(f=>f.kind==='conduit');assert(canUse(conduit,reach));
+      const s=G.ents.find(e=>e.kind==='splitter'),count=G.totalEnemies;
+      damageEnemy(s,1000);assert.equal(G.ents.filter(e=>e.kind==='crawler').length,3);assert.equal(G.totalEnemies,count+3);
+      damageEnemy(s,1000);assert.equal(G.ents.filter(e=>e.kind==='crawler').length,3);
+      const leech=G.ents.find(e=>e.kind==='leech');leech.x=3.5;leech.y=2.5;leech.fire=0;
+      updateEnemy(leech,.05);assert(G.systems.outage>0);damageEnemy(leech,1000);updateBlackout(.05);assert.equal(G.systems.outage,0);
+      // Both power modes provide a path into the rear laboratory.
+      useFixture(firstPanel);settle();assert(canUse(conduit,reachableFromStart()));
+      G.posX=conduit.x+.5;G.posY=conduit.y+1.5;hitscan(0,-1,14);settle();assert(chapterExitReady());
+    }else{
+      const boss=G.ents.find(e=>e.kind==='warden'),hp=boss.hp;
+      damageEnemy(boss,1000);assert.equal(boss.hp,hp,'shield blocks damage');
+      for(const relay of def.fixtures.filter(f=>f.kind==='relay')){assert(canUse(relay,reach),'relay reachable: '+relay.label);useFixture(relay);}
+      assert(!chapterExitReady(),'boss must also die');
+      G.posX=12.5;G.posY=12.5;boss.fire=0;updateEnemy(boss,.05);assert.equal(G.ents.filter(e=>e.type==='proj'&&e.owner===boss).length,5);
+      boss.fire=0;updateEnemy(boss,.05);assert(G.systems.hazards.length>0);G.systems.hazards=[];
+      G.posX=12.5;G.posY=12.5;G.armor=0;G.hp=100;warnFloor();updateBlackout(1);assert.equal(G.hp,100);
+      updateBlackout(.5);assert(G.hp<100,'warned tile becomes hazardous');
+      damageEnemy(boss,1000);assert(boss.dead);assert(chapterExitReady());assert.equal(G.systems.hazards.length,0);
+    }
+    settle();reach=reachableFromStart();assert(canUse(G.secretsExit,reach),'exit reachable '+MAPS[i].name);
+    renderWorld();drawHUD();drawAutomap();
+    const saved=readCheckpoint();assert.equal(saved.level,i);assert.equal(saved.loadout.hp,100);
+    G.hp=1;G.ammo.rockets=0;continueCheckpoint();assert.equal(G.hp,100);assert.equal(G.ammo.rockets,8);assert.equal(G.systems.conduit,false);
+  }
+  localStorage.setItem(CHECKPOINT_KEY,'{bad json');assert.equal(readCheckpoint(),null);
+  localStorage.setItem(CHECKPOINT_KEY,JSON.stringify({version:1,level:999,loadout:levelEntry}));assert.equal(readCheckpoint(),null);
+  saveCheckpoint();const invalid=readCheckpoint();invalid.loadout.ammo.rockets=-1;
+  localStorage.setItem(CHECKPOINT_KEY,JSON.stringify(invalid));assert.equal(readCheckpoint(),null);
+  // Briefings keep enemies paused until explicit entry.
+  loadLevel(3);go();assert.equal(G.mode,'briefing');assert(document.getElementById('brief-cards').innerHTML.includes('Power Switch'));
+  document.getElementById('btn-enter').onclick();assert.equal(G.mode,'play');
+  showGuide('p-pause');assert(document.getElementById('guide-cards').innerHTML.includes('Portal Gun'));
+
+  // Portal placement, actual traversal, retrigger guard, and puzzle boundaries.
+  arena(['########','#......#','#......#','#......#','########']);
+  G.systems=null;G.portals=[null,null];G.nextPortal=0;G.portalReady=true;
+  G.posX=3.5;G.posY=2.5;G.dirX=1;G.dirY=0;G.planeX=0;G.planeY=FOV;
+  placePortal();assert.equal(G.portals[0].kind,'portalBlue');assert.equal(G.nextPortal,1);
+  rotate(Math.PI);placePortal();assert.equal(G.portals[1].kind,'portalAmber');
+  const entrance=G.portals[0],exit=G.portals[1];G.posX=entrance.x;G.posY=entrance.y;
+  updatePortals();assert(Math.hypot(G.posX-exit.x,G.posY-exit.y)<.6);assert(!G.portalReady);
+  const arrived=G.posX;updatePortals();assert.equal(G.posX,arrived,'no immediate return teleport');
+  G.posX=3.5;updatePortals();assert(G.portalReady);
+  G.posX=exit.x;G.posY=exit.y;updatePortals();assert(Math.hypot(G.posX-entrance.x,G.posY-entrance.y)<.6,'return trip works');
+  G.explored=new Uint8Array(G.W*G.H);renderWorld();
+  for(const t of [T_DOOR,T_LOCK,T_POWER,T_CONDUIT,T_RELAY,T_GLASS,T_EXIT]){
+    G.posX=3.5;G.posY=2.5;G.dirX=1;G.dirY=0;G.portals=[null,null];G.nextPortal=0;
+    G.map[2*G.W+5]=t;placePortal();assert.equal(G.portals[0],null,'reject non-portal surface '+t);
+  }
+  loadLevel(3);assert(G.portals.every(p=>p===null));
+  const portalPickup=G.ents.find(e=>e.kind==='wPortal');assert(portalPickup);
+  G.posX=portalPickup.x;G.posY=portalPickup.y;checkPickup(portalPickup);assert(G.owned[4]);assert.equal(G.weapon,4);
+  G.hp=100;saveCheckpoint();const valid=readCheckpoint();assert(valid);
+  // Inventory saved at sector entry, so an in-sector Portal Gun pickup resets on retry.
+  assert.equal(valid.loadout.owned[4],false);
   document.getElementById('setting-volume').oninput({target:{value:'0'}});assert.equal(settings.volume,0);
   document.getElementById('setting-sensitivity').oninput({target:{value:'2'}});assert.equal(settings.sensitivity,2);
   document.getElementById('setting-controls').onchange({target:{value:'touch'}});assert.equal(TOUCH,true);
   document.getElementById('setting-controls').onchange({target:{value:'desktop'}});assert.equal(TOUCH,false);
-  console.log('PASS: cover, doors, corners, weapon effects, ammo cooldown, analog input, focus, death/retry, maps, rendering smoke check, settings');
+  console.log('PASS: combat, controls, six map routes, machinery, enemies, boss, checkpoints, briefings, portals, rendering, settings');
 `;
 vm.runInNewContext(source.slice(0,source.lastIndexOf('})();'))+checks+'})();', {
   assert,console,document,listeners,timers,
   window:{innerWidth:960,innerHeight:540,matchMedia:()=>({matches:false}),addEventListener:noop},
-  localStorage:{getItem:()=>null,setItem:noop},performance:{now:()=>0},requestAnimationFrame:noop,
+  localStorage:{getItem:k=>storage.get(k)??null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},performance:{now:()=>0},requestAnimationFrame:noop,
   addEventListener:(name,fn)=>{listeners[name]=fn;},
   setTimeout:fn=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id),
 }, {timeout:5000});
