@@ -99,7 +99,11 @@ a blue portal, then fire elsewhere to place amber. Walk into either ring to emer
 from its partner, facing away from the destination wall. Subsequent shots replace
 the next color shown on the HUD. Leave the destination ring before re-entering it.
 
-Portals are linked travel points, not see-through renderings of the other room.
+Linked portals show a live view of the destination. Sidearm, Boomstick, Thumper,
+and rocket shots travel through them, as do enemy projectiles. Destination walls
+still block shots. Nested portal views stay opaque and shot traversal is capped
+to prevent infinite loops. Enemy ranged bolts have bright cores and colored trails:
+green for ordinary plasma, orange for sentries, and purple for the Warden.
 They require clear floor space and cannot be placed on doors, glass, switches,
 conduits, relays, vents, or exits. They do no damage and use no ammunition.
 They reset on sector entry/retry; ownership carries forward once the pickup has
@@ -117,8 +121,8 @@ The checks execute the actual inline game script in a small mock DOM/canvas
 environment. They cover explosion cover (including doors and corners), empty
 weapon cooldown, analog movement, focus loss, death/retry transitions, map
 reachability, machinery modes and bypasses, new enemy behaviors, boss shield and
-surge timing, checkpoint validation, briefings, portal placement/traversal, and
-settings. A rendering smoke check exercises all six levels;
+surge timing, checkpoint validation, briefings, portal placement/traversal, live-view clipping, shots through straight and rotated
+portals, destination cover, projectile trails, bounded portal loops, and settings. A rendering smoke check exercises all six levels;
 it does not replace a browser or real-device playtest.
 
 Manual checks before releasing: start/pause/resume, map open/close, change settings

@@ -218,6 +218,44 @@ const checks = String.raw`
   G.hp=100;saveCheckpoint();const valid=readCheckpoint();assert(valid);
   // Inventory saved at sector entry, so an in-sector Portal Gun pickup resets on retry.
   assert.equal(valid.loadout.owned[4],false);
+  // Remote targets are behind a solid divider; the shared camera/shot transform
+  // must see and hit them only through the aperture.
+  arena(['############','#....#.....#','#....#.....#','#....#.....#','#....#.....#','#....#.....#','############']);
+  G.systems=null;G.posX=2.5;G.posY=3.5;G.dirX=1;G.dirY=0;G.planeX=0;G.planeY=FOV;G.bob=0;G.pitch=0;
+  const blue={type:'portal',kind:'portalBlue',x:4.6,y:3.5,outX:-1,outY:0,alive:true};
+  const amber={type:'portal',kind:'portalAmber',x:6.4,y:3.5,outX:1,outY:0,alive:true};
+  G.portals=[blue,amber];G.ents.push(blue,amber);spawnEnemy('grunt',8.5,3.5);
+  const remote=G.ents[G.ents.length-1];remote.hp=1000;
+  assert.equal(hasLOS(G.posX,G.posY,remote.x,remote.y),false);
+  hitscan(1,0,14,24,0);assert.equal(remote.hp,986);
+  assert.equal(G.ents.filter(e=>e.type==='tracer').length,2,'one tracer per side');
+  G.map[3*G.W+7]=T_TECH;hitscan(1,0,14);assert.equal(remote.hp,986,'remote cover blocks hits');G.map[3*G.W+7]=T_EMPTY;
+  projectile('rocket',4.4,3.5,1,0,9,'player');const rocket=G.ents[G.ents.length-1];updateProj(rocket,.05);
+  assert.equal(rocket.portalHops,1);assert(rocket.x>6);assert(rocket.alive);
+  for(let i=0;i<10&&rocket.alive;i++)updateProj(rocket,.05);assert(remote.hp<986,'rocket explodes on remote target');
+  for(const kind of ['grunt','turret','warden']){
+    const owner={kind,dmg:9};projectile('plasma',6.8,2.5,1,0,6,owner);const bolt=G.ents[G.ents.length-1];
+    assert.equal(bolt.kind,{grunt:'plasma',turret:'sentryBolt',warden:'wardenBolt'}[kind]);
+    assert(SPRITES[bolt.kind]);updateProj(bolt,.05);assert(G.ents.some(e=>e.kind===bolt.kind+'Trail'));
+  }
+  G.explored=new Uint8Array(G.W*G.H);G.map[3*G.W+11]=T_ICE;
+  G.portals=[];renderWorld();const center=(RH/2|0)*RW+(RW/2|0),plain=buf[center];
+  G.portals=[blue,amber];const camera=[G.posX,G.posY,G.dirX,G.dirY];renderWorld();
+  assert.deepEqual([G.posX,G.posY,G.dirX,G.dirY],camera,'remote render restores camera');
+  assert(blue.viewValid&&portalDepth[center]>0);assert.notEqual(buf[center],plain,'live view replaces wall');
+  const remotePixel=blue.view[center],savedCamera={posX:G.posX,posY:G.posY,dirX:G.dirX,dirY:G.dirY,planeX:G.planeX,planeY:G.planeY};
+  const virtual=throughPortal(blue,amber,G.posX,G.posY,G.dirX,G.dirY);
+  Object.assign(G,{posX:virtual.x,posY:virtual.y,dirX:virtual.dx,dirY:virtual.dy,planeX:-virtual.dy*FOV,planeY:virtual.dx*FOV});
+  G.portals=[];renderWorld(amber);assert.equal(remotePixel,buf[center],'entry behind exit plane cannot obscure destination');
+  Object.assign(G,savedCamera);G.portals=[blue,amber];
+  amber.x=8.5;amber.y=1.4;amber.outX=0;amber.outY=1;remote.x=8.5;remote.y=4.5;remote.hp=1000;
+  const transformed=throughPortal(blue,amber,blue.x,blue.y,1,0);assert(Math.abs(transformed.dx)<1e-9);assert(Math.abs(transformed.dy-1)<1e-9);
+  hitscan(1,0,14);assert.equal(remote.hp,986,'shot turns 90 degrees with view');renderWorld();
+  // Closed loop terminates without unbounded rendering or projectile travel.
+  arena(['########','#......#','#......#','#......#','########']);
+  G.posX=3.5;G.posY=2.5;G.dirX=1;G.dirY=0;G.portals=[{...blue,x:6.6,y:2.5},{...amber,x:1.4,y:2.5,outX:1,outY:0}];
+  assert(hitscan(1,0,14)<=24);projectile('rocket',6.4,2.5,1,0,9,'player');const loop=G.ents[G.ents.length-1];
+  for(let i=0;i<120&&loop.alive;i++)updateProj(loop,.05);assert(!loop.alive);assert(loop.portalHops<=9);
   document.getElementById('setting-volume').oninput({target:{value:'0'}});assert.equal(settings.volume,0);
   document.getElementById('setting-sensitivity').oninput({target:{value:'2'}});assert.equal(settings.sensitivity,2);
   document.getElementById('setting-controls').onchange({target:{value:'touch'}});assert.equal(TOUCH,true);

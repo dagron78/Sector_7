@@ -248,7 +248,7 @@ const screenCv = document.getElementById('screen');
 const sctx = screenCv.getContext('2d');
 const bufCv = document.createElement('canvas');
 const bctx = bufCv.getContext('2d');
-let imgData, buf, zbuf, rowDist, rowLevel,glassDepth;
+let imgData, buf, zbuf, rowDist, rowLevel,glassDepth,portalDepth;
 
 function setResolution(){
   const vw = window.innerWidth || 960, vh = window.innerHeight || 540;
@@ -262,6 +262,7 @@ function setResolution(){
   buf   = new Uint32Array(imgData.data.buffer);
   zbuf  = new Float32Array(RW);
   glassDepth=new Float32Array(RW);
+  portalDepth=new Float32Array(RW*RH);
   rowDist  = new Float32Array(RH);
   rowLevel = new Uint8Array(RH);
   sctx.imageSmoothingEnabled = false;
@@ -751,7 +752,7 @@ const FIELD_GUIDE={
   splitter:['Splitter · swollen green sacs','It releases three fast Crawlers on death. Keep your distance; a well-placed rocket can catch the whole swarm.'],
   warden:['Warden · rooted violet core','Sever its Shield Relays, then attack the core. It alternates plasma volleys and marked floor surges, attacking faster below 40% health.'],
   turret:['Sentry · fixed gun pedestal','In Cold Storage, Security power activates these guns and Containment disables them. In any sector, cut their orange Conduit to shut them down. Cover blocks their projectiles.'],
-  portal:['Portal Gun · slot 5','Pick up the blue-and-amber projector in Freight Graveyard. FIRE places blue, then amber, on ordinary walls. Walk into either ring to travel. Fire again to move the next color. No ammunition required.'],
+  portal:['Portal Gun · slot 5','Pick up the blue-and-amber projector in Freight Graveyard. FIRE places blue, then amber, on ordinary walls. Look and shoot through linked rings, or walk into either to travel. Fire again to move the next color. No ammunition required.'],
   basics:['Keys, Doors & Exit','Normal doors open when approached. Red doors need the red keycard. USE the green exit switch after completing the objective. TAB/MAP pauses and shows your route.'],
   grunt:['Grunt & Brute','Teal Grunts fire green plasma; dodge sideways or take cover. Purple Brutes close in for melee; keep moving and avoid getting cornered.'],
 };
@@ -824,6 +825,14 @@ for(const [kind,color] of [['portalBlue','#25d0ff'],['portalAmber','#ffb627']])S
 SPRITES.wPortal=makeSprite(48,48,g=>{
   g.fillStyle='#d0d8df';g.fillRect(5,21,34,17);ell(g,13,23,8,10,'#25d0ff');ell(g,32,23,8,10,'#ffb627');
 });
+for(const [kind,color] of [['plasma','#50ffb5'],['sentryBolt','#ff953d'],['wardenBolt','#e78aff']]){
+  SPRITES[kind]=makeSprite(32,32,g=>{
+    ell(g,16,16,15,15,color);ell(g,16,16,9,9,'#efffff');ell(g,16,16,4,4,color);
+  });
+  SPRITES[kind+'Trail']=makeSprite(24,24,g=>{
+    ell(g,12,12,10,10,color);ell(g,12,12,4,4,'#fff');
+  });
+}
 
 function initBlackout(){
   const def=MAPS[G.level].blackout;
@@ -1189,13 +1198,14 @@ function spawnEnemy(kind,x,y){
 }
 function item(kind,x,y){ G.ents.push({type:'item', kind, x, y, scale:0.32, alive:true, bobT:Math.random()*TAU}); }
 function projectile(kind,x,y,dx,dy,speed,owner){
-  G.ents.push({type:'proj', kind, x, y, dx, dy, speed, owner, alive:true, scale:kind==='rocket'?0.22:0.26, life:6});
+  if(kind==='plasma')kind=owner.kind==='warden'?'wardenBolt':owner.kind==='turret'?'sentryBolt':'plasma';
+  G.ents.push({type:'proj', kind, x, y, dx, dy, speed, owner, alive:true, scale:kind==='rocket'?0.22:0.32, life:6,portalHops:0});
 }
 function blast(x,y){ G.ents.push({type:'fx', kind:'blast', x, y, t:0, scale:0.9, alive:true}); }
-function tracer(dx,dy,distance,weapon){
+function tracer(dx,dy,distance,weapon,originX=G.posX,originY=G.posY){
   const start=Math.min(0.35,distance);
   G.ents.push({type:'tracer',kind:['sidearmTrace','pelletTrace','ripperTrace'][weapon],
-    x:G.posX+dx*start,y:G.posY+dy*start,dx,dy,remaining:distance-start,
+    x:originX+dx*start,y:originY+dy*start,dx,dy,remaining:distance-start,
     speed:distance/0.10,life:0.18,duration:0.18,scale:weapon===1?0.045:0.12,
     height:weapon===1?0.06+(Math.random()-0.5)*0.1:0.06,alive:true});
 }
@@ -1263,20 +1273,50 @@ function splash(x,y,rad,dmg){
 }
 
 /* ================= shooting ================= */
-function hitscan(dx,dy,dmg,maxD){
-  maxD = maxD||24;
-  for(let s=0.2; s<maxD; s+=0.06){
-    const x=G.posX+dx*s, y=G.posY+dy*s;
+function hitscan(dx,dy,dmg,maxD=24,visualWeapon){
+  let x=G.posX,y=G.posY,ox=x,oy=y,segment=0,travelled=0,hops=0;
+  const finish=()=>{if(visualWeapon!==undefined)tracer(dx,dy,segment,visualWeapon,ox,oy);return travelled;};
+  while(travelled<maxD){
+    const step=Math.min(.06,maxD-travelled),nx=x+dx*step,ny=y+dy*step;
+    const crossing=portalCrossing(x,y,nx,ny);
+    if(crossing){
+      const used=step*crossing.f;segment+=used;travelled+=used;
+      if(++hops>4)return finish();
+      if(visualWeapon!==undefined)tracer(dx,dy,segment,visualWeapon,ox,oy);
+      const p=throughPortal(crossing.entry,crossing.exit,crossing.x,crossing.y,dx,dy);
+      x=ox=p.x+crossing.exit.outX*.02;y=oy=p.y+crossing.exit.outY*.02;dx=p.dx;dy=p.dy;segment=0;
+      continue;
+    }
+    x=nx;y=ny;travelled+=step;segment+=step;
     if(sightBlocked(tileAt(x,y), x|0, y|0)){
       if(tileAt(x,y)===T_CONDUIT)cutConduit();
-      return Math.max(0,s-0.06);
+      segment=Math.max(0,segment-step);return finish();
     }
     for(const e of G.ents){
       if(e.type!=='enemy'||e.dead) continue;
-      if(Math.hypot(e.x-x,e.y-y) < e.radius+0.06){ damageEnemy(e,dmg); return s; }
+      if(Math.hypot(e.x-x,e.y-y) < e.radius+0.06){ damageEnemy(e,dmg,ox,oy);return finish(); }
     }
   }
-  return maxD;
+  return finish();
+}
+// One transform is shared by the camera and weapons, so visible targets line up.
+function throughPortal(entry,exit,x,y,dx,dy){
+  const a=Math.atan2(exit.outY,exit.outX)-Math.atan2(entry.outY,entry.outX)+Math.PI;
+  const c=Math.cos(a),s=Math.sin(a),rx=x-entry.x,ry=y-entry.y;
+  return {x:exit.x+rx*c-ry*s,y:exit.y+rx*s+ry*c,dx:dx*c-dy*s,dy:dx*s+dy*c};
+}
+function portalCrossing(ax,ay,bx,by){
+  if(G.portals?.length!==2||!G.portals.every(p=>p?.alive))return null;
+  let closest=null;
+  for(let i=0;i<2;i++){
+    const entry=G.portals[i],exit=G.portals[1-i];
+    const a=(ax-entry.x)*entry.outX+(ay-entry.y)*entry.outY;
+    const b=(bx-entry.x)*entry.outX+(by-entry.y)*entry.outY;
+    if(a<=0||b>0)continue;
+    const f=a/(a-b),x=ax+(bx-ax)*f,y=ay+(by-ay)*f;
+    const side=(x-entry.x)*-entry.outY+(y-entry.y)*entry.outX;
+    if(Math.abs(side)<.33&&(!closest||f<closest.f))closest={entry,exit,x,y,f};
+  }return closest;
 }
 function placePortal(){
   const dx=G.dirX,dy=G.dirY;
@@ -1304,7 +1344,7 @@ function placePortal(){
   msg('No portal surface within range.');
 }
 function updatePortals(){
-  if(!G.portals?.every(Boolean))return;
+  if(G.portals?.length!==2||!G.portals.every(Boolean))return;
   const near=G.portals.findIndex(p=>Math.hypot(G.posX-p.x,G.posY-p.y)<.6);
   if(near<0){G.portalReady=true;return;}
   if(!G.portalReady)return;
@@ -1350,7 +1390,7 @@ function fire(){
     for(let i=0;i<n;i++){
       const a = ang + (Math.random()-0.5)*w.spread*2;
       const dx=Math.cos(a),dy=Math.sin(a);
-      tracer(dx,dy,hitscan(dx,dy,w.dmg),G.weapon);
+      hitscan(dx,dy,w.dmg,24,G.weapon);
     }
   } else {
     const rx=Math.cos(ang), ry=Math.sin(ang);
@@ -1673,17 +1713,25 @@ function updateEnemy(e,dt){
 function updateProj(p,dt){
   p.life -= dt;
   if(p.life<=0){ p.alive=false; return; }
-  if(p.kind==='rocket'){
+  {
     p.trailTime=(p.trailTime||0)-dt;
     if(p.trailTime<=0){
       p.trailTime=0.035;
-      G.ents.push({type:'trail',kind:'rocketTrail',x:p.x,y:p.y,
-        life:0.28,duration:0.28,scale:0.10,height:0.06,alive:true});
+      const duration=p.kind==='rocket'?.28:.14;
+      G.ents.push({type:'trail',kind:p.kind+'Trail',x:p.x,y:p.y,
+        life:duration,duration,scale:0.10,height:0.06,alive:true});
     }
   }
   const steps=3, sd=p.speed*dt/steps;
   for(let i=0;i<steps;i++){
-    p.x += p.dx*sd; p.y += p.dy*sd;
+    const crossing=portalCrossing(p.x,p.y,p.x+p.dx*sd,p.y+p.dy*sd);
+    if(crossing){
+      if(++p.portalHops>8){p.alive=false;return;}
+      const q=throughPortal(crossing.entry,crossing.exit,crossing.x,crossing.y,p.dx,p.dy);
+      p.dx=q.dx;p.dy=q.dy;
+      p.x=q.x+crossing.exit.outX*.02+p.dx*sd*(1-crossing.f);
+      p.y=q.y+crossing.exit.outY*.02+p.dy*sd*(1-crossing.f);
+    }else {p.x+=p.dx*sd;p.y+=p.dy*sd;}
     if(sightBlocked(tileAt(p.x,p.y), p.x|0, p.y|0)){
       if(p.owner==='player'&&tileAt(p.x,p.y)===T_CONDUIT)cutConduit();
       p.alive=false;
@@ -1742,12 +1790,60 @@ function checkPickup(it){
 }
 
 /* ================= render: world ================= */
-function renderWorld(){
+function portalVisible(p){
+  const x=p.x-G.posX,y=p.y-G.posY,forward=x*G.dirX+y*G.dirY;
+  return (G.posX-p.x)*p.outX+(G.posY-p.y)*p.outY>0&&forward>.05&&
+    Math.abs(x*-G.dirY+y*G.dirX)<forward*FOV+.5;
+}
+function preparePortalViews(){
+  if(G.portals?.length!==2||!G.portals.every(p=>p?.alive))return;
+  const camera={posX:G.posX,posY:G.posY,dirX:G.dirX,dirY:G.dirY,planeX:G.planeX,planeY:G.planeY};
+  for(let i=0;i<2;i++){
+    const entry=G.portals[i],exit=G.portals[1-i];entry.viewValid=false;
+    if(!portalVisible(entry))continue;
+    const q=throughPortal(entry,exit,camera.posX,camera.posY,camera.dirX,camera.dirY);
+    try{
+      G.posX=q.x;G.posY=q.y;G.dirX=q.dx;G.dirY=q.dy;G.planeX=-q.dy*FOV;G.planeY=q.dx*FOV;
+      // One remote render per visible portal. Nested portals remain opaque.
+      renderWorld(exit);
+      if(!entry.view||entry.view.length!==buf.length)entry.view=new Uint32Array(buf.length);
+      entry.view.set(buf);entry.viewValid=true;
+    }finally{Object.assign(G,camera);}
+  }
+}
+function drawPortalWindows(pitch,clip){
+  for(const p of G.portals||[]){
+    if(!p?.alive||!portalVisible(p))continue;
+    if(clip&&(p.x-clip.x)*clip.outX+(p.y-clip.y)*clip.outY<0)continue;
+    const paired=G.portals.every(q=>q?.alive),color=p.kind==='portalBlue'?rgb(37,208,255):rgb(255,182,39);
+    for(let x=0;x<RW;x++){
+      const camX=2*x/RW-1,dx=G.dirX+G.planeX*camX,dy=G.dirY+G.planeY*camX;
+      const denom=dx*p.outX+dy*p.outY;if(denom>=-1e-8)continue;
+      const d=((p.x-G.posX)*p.outX+(p.y-G.posY)*p.outY)/denom;
+      if(d<.02||d>=zbuf[x])continue;
+      const u=(G.posX+dx*d-p.x)*-p.outY+(G.posY+dy*d-p.y)*p.outX;
+      const side=u*u/(.33*.33);if(side>=1)continue;
+      const center=RH/2+pitch,radius=RH*.45/d,span=radius*Math.sqrt(1-side);
+      for(let y=Math.max(0,Math.ceil(center-span));y<Math.min(RH,center+span);y++){
+        const at=y*RW+x,n=side+((y-center)/radius)**2;
+        if(portalDepth[at]&&portalDepth[at]<d)continue;
+        if(n>.83)buf[at]=color;
+        else if(n>.73)buf[at]=rgb(225,251,255);
+        else if(paired&&!clip&&p.viewValid)buf[at]=p.view[at];
+        else buf[at]=shadeC(color,.12+.07*Math.sin(G.time*4+y*.15));
+        portalDepth[at]=d;
+      }
+    }
+  }
+}
+function renderWorld(clip=null){
+  if(!clip)preparePortalViews();
   const half = RH/2;
   const exp = G.explored;
   const pitch = G.pitch + Math.sin(G.bob)*1.6;
   const light=G.systems?(G.systems.outage>0?.35:G.level===3&&G.systems.mode!=='lighting'?.6:.85):1;
   glassDepth.fill(0);
+  portalDepth.fill(0);
 
   // precompute floor/ceiling distance + shade per screen row
   for(let y=0;y<RH;y++){
@@ -1762,12 +1858,19 @@ function renderWorld(){
     const camX = 2*x/RW - 1;
     const rdx = G.dirX + G.planeX*camX;
     const rdy = G.dirY + G.planeY*camX;
-    let mapX = G.posX|0, mapY = G.posY|0;
+    let near=0;
+    if(clip){
+      const denom=rdx*clip.outX+rdy*clip.outY;
+      if(denom<=1e-8){for(let y=0;y<RH;y++)buf[y*RW+x]=rgb(6,9,18);zbuf[x]=0;continue;}
+      near=Math.max(0,((clip.x-G.posX)*clip.outX+(clip.y-G.posY)*clip.outY)/denom)+.002;
+    }
+    const originX=G.posX+rdx*near,originY=G.posY+rdy*near;
+    let mapX = Math.floor(originX), mapY = Math.floor(originY);
     const ddx = rdx===0 ? 1e30 : Math.abs(1/rdx);
     const ddy = rdy===0 ? 1e30 : Math.abs(1/rdy);
     let stepX, stepY, sdx, sdy;
-    if(rdx<0){ stepX=-1; sdx=(G.posX-mapX)*ddx; } else { stepX=1; sdx=(mapX+1-G.posX)*ddx; }
-    if(rdy<0){ stepY=-1; sdy=(G.posY-mapY)*ddy; } else { stepY=1; sdy=(mapY+1-G.posY)*ddy; }
+    if(rdx<0){ stepX=-1; sdx=(originX-mapX)*ddx; } else { stepX=1; sdx=(mapX+1-originX)*ddx; }
+    if(rdy<0){ stepY=-1; sdy=(originY-mapY)*ddy; } else { stepY=1; sdy=(mapY+1-originY)*ddy; }
 
     let side=0, tile=0, perp=0, wallX=0, doorOpen=0, guard=0;
     while(guard++ < 256){
@@ -1777,7 +1880,7 @@ function renderWorld(){
       exp[mapY*G.W+mapX]=1;
       const t = G.map[mapY*G.W+mapX];
       if(t===T_EMPTY) continue;
-      perp = side===0 ? (sdx-ddx) : (sdy-ddy);
+      perp = near+(side===0 ? (sdx-ddx) : (sdy-ddy));
       if(t===T_GLASS){if(!glassDepth[x])glassDepth[x]=perp;continue;}
       wallX = side===0 ? G.posY + perp*rdy : G.posX + perp*rdx;
       wallX -= Math.floor(wallX);
@@ -1829,12 +1932,14 @@ function renderWorld(){
       if(mark && (((fx*10)|0)+((fy*10)|0))%4<2)buf[y*RW+x]=shadeC(mark,Math.max(.5,1-d/18));
     }
   }
-  renderSprites(pitch);
+  drawPortalWindows(pitch,clip);
+  renderSprites(pitch,clip);
   // Armored viewing windows show enemies but still block bullets and movement.
   for(let x=0;x<RW;x++){
     const d=glassDepth[x];if(!d)continue;
     const h=RH/d,top=half+pitch-h/2,bottom=top+h;
     for(let y=Math.max(0,Math.ceil(top));y<Math.min(RH,bottom);y++){
+      if(portalDepth[y*RW+x]&&portalDepth[y*RW+x]<d)continue;
       const c=buf[y*RW+x],a=y-top<h*.08||bottom-y<h*.08?.75:.16;
       buf[y*RW+x]=rgb((c&255)*(1-a)+55*a,((c>>>8)&255)*(1-a)+130*a,((c>>>16)&255)*(1-a)+150*a);
     }
@@ -1867,7 +1972,7 @@ function spriteFrame(e){
   return (e.anim|0)%2 ? set[1] : set[2];
 }
 
-function renderSprites(pitch){
+function renderSprites(pitch,clip=null){
   const half=RH/2;
   const list = G.ents.filter(e=>e.alive)
     .map(e=>({e, d:(e.x-G.posX)**2 + (e.y-G.posY)**2}))
@@ -1875,6 +1980,8 @@ function renderSprites(pitch){
   const invDet = 1/(G.planeX*G.dirY - G.dirX*G.planeY);
 
   for(const {e} of list){
+    if(e.type==='portal')continue;
+    if(clip&&(e.x-clip.x)*clip.outX+(e.y-clip.y)*clip.outY<0)continue;
     const spr = spriteFrame(e);
     if(!spr) continue;
     const sx=e.x-G.posX, sy=e.y-G.posY;
@@ -1883,6 +1990,7 @@ function renderSprites(pitch){
     if(tY<0.12) continue;
 
     let scale = e.scale||1;
+    if(e.type==='proj'&&e.owner!=='player')scale*=1+.12*Math.sin(G.time*25);
     let bobOff = 0;
     if(e.type==='item') bobOff = Math.sin(e.bobT)*0.05;
     if(e.dead) scale = e.scale*0.95;
@@ -1914,6 +2022,7 @@ function renderSprites(pitch){
       const tx = ((x-startX)*spr.w/w)|0;
       if(tx<0||tx>=spr.w) continue;
       for(let y=y0;y<=y1;y++){
+        if(portalDepth[y*RW+x]&&tY>=portalDepth[y*RW+x])continue;
         const ty = ((y-startY)*spr.h/h)|0;
         if(ty<0||ty>=spr.h) continue;
         const c = spr.px[ty*spr.w+tx];
